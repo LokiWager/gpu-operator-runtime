@@ -1,6 +1,8 @@
 APP_NAME := runtime
 
-.PHONY: run build test fmt tidy
+GOFILES := $(shell find . -type f -name '*.go' -not -path './vendor/*')
+
+.PHONY: run build test test-race vet fmt fmt-check tidy ci
 
 run:
 	go run ./cmd/runtime
@@ -12,8 +14,24 @@ build:
 test:
 	go test ./...
 
+test-race:
+	go test -race ./...
+
+vet:
+	go vet ./...
+
 fmt:
-	gofmt -w ./cmd ./pkg
+	gofmt -w $(GOFILES)
+
+fmt-check:
+	@out=$$(gofmt -l $(GOFILES)); \
+	if [ -n "$$out" ]; then \
+		echo "gofmt check failed for:"; \
+		echo "$$out"; \
+		exit 1; \
+	fi
 
 tidy:
 	go mod tidy
+
+ci: fmt-check vet test-race build

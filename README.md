@@ -41,6 +41,28 @@ curl -s -X POST http://127.0.0.1:8080/api/v1/vms \
   -d '{"tenantID":"t-demo","tenantName":"demo","specName":"g1.1"}' | jq
 ```
 
+## Engineering Baseline (Day-0)
+
+From the first chapter, this project includes minimal quality gates:
+
+- unit tests (`*_test.go`)
+- format check (`gofmt`)
+- static checks (`go vet`)
+- race-enabled tests (`go test -race`)
+- CI workflow for every PR/push
+- image release workflow on Git tags
+
+Run local quality checks:
+
+```bash
+make ci
+```
+
+GitHub workflows:
+
+- `.github/workflows/ci.yml`: formatting, vet, race tests, build
+- `.github/workflows/release-image.yml`: build/push image to GHCR on tag `v*`
+
 ## Runtime Flags
 
 - `--http-addr`: default `:8080`
@@ -58,6 +80,7 @@ curl -s -X POST http://127.0.0.1:8080/api/v1/vms \
 - `pkg/kube`: kubernetes client bootstrap
 - `deploy/k8s`: minimal manifests
 - `docs/chapters`: article chapters
+- `.github/workflows`: CI/CD pipelines
 
 ## Desensitization Notes
 

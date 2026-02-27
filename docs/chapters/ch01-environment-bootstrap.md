@@ -11,6 +11,7 @@ This chapter only covers the smallest single-cluster runtime loop:
 - Stock/VM are the two core runtime objects
 - one background status reporting job is running
 - optional Kubernetes API integration (auto-detect mode)
+- day-0 quality gates are available (tests + CI/CD)
 
 Not included yet:
 
@@ -78,10 +79,22 @@ This follows a common production pattern for status reporting and can later be r
 - `off`: run without Kubernetes connection
 - `required`: Kubernetes connection is mandatory, otherwise startup fails
 
+### 3.6 Testing and CI/CD from Init
+
+From chapter 1, the project already includes:
+
+- unit tests for config/store/service/api
+- local quality command: `make ci`
+- CI pipeline: format check + vet + race tests + build
+- release pipeline: build and publish container image on version tags
+
+This reduces refactor risk while the architecture is still evolving quickly.
+
 ## 4. How to Run
 
 ```bash
 make tidy
+make ci
 make run
 ```
 
