@@ -1,0 +1,38 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gpu-runtime
+  namespace: gpu-runtime
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gpu-runtime
+  template:
+    metadata:
+      labels:
+        app: gpu-runtime
+    spec:
+      serviceAccountName: default
+      containers:
+      - name: runtime
+        image: ghcr.io/example/gpu-operator-runtime:latest
+        imagePullPolicy: IfNotPresent
+        args:
+        - "--http-addr=:8080"
+        - "--kube-mode=required"
+        ports:
+        - name: http
+          containerPort: 8080
+        readinessProbe:
+          httpGet:
+            path: /api/v1/health
+            port: http
+          initialDelaySeconds: 3
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /api/v1/health
+            port: http
+          initialDelaySeconds: 10
+          periodSeconds: 20
