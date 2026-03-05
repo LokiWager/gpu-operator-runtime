@@ -10,9 +10,12 @@ This repository is built from desensitized engineering patterns extracted from r
 ## Chapter Progress
 
 - [x] Chapter 01: environment bootstrap and minimal runtime skeleton
-- [ ] Chapter 02+: lifecycle, reconcile/job model, storage, security, observability, multi-cluster/serverless
+- [x] Chapter 02: minimal operator skeleton (CRD + reconcile + status update)
+- [ ] Chapter 03+: storage, security, observability, multi-cluster/serverless
 
 ## Quick Start
+
+Prerequisite: Go 1.26+
 
 ```bash
 make tidy
@@ -41,6 +44,20 @@ curl -s -X POST http://127.0.0.1:8080/api/v1/vms \
   -d '{"tenantID":"t-demo","tenantName":"demo","specName":"g1.1"}' | jq
 ```
 
+## Operator Quick Start (Chapter 02)
+
+```bash
+# terminal 1: apply CRD and sample
+kubectl apply -f deploy/operator/crd.yaml
+kubectl apply -f deploy/operator/sample-stockpool.yaml
+
+# terminal 2: run operator locally
+make run-operator
+
+# verify status updates
+kubectl get stockpools.runtime.lokiwager.io pool-g1 -o yaml
+```
+
 ## Engineering Baseline (Day-0)
 
 From the first chapter, this project includes minimal quality gates:
@@ -65,20 +82,28 @@ GitHub workflows:
 
 ## Runtime Flags
 
+- `--mode`: `runtime|operator` (default `runtime`)
 - `--http-addr`: default `:8080`
 - `--report-interval`: default `30s`
 - `--kube-mode`: `auto|off|required`
 - `--kubeconfig`: optional kubeconfig path
+- `--metrics-bind-address`: default `:8081` (operator mode)
+- `--health-probe-bind-address`: default `:8082` (operator mode)
+- `--leader-elect`: default `false` (operator mode)
 
 ## Project Layout
 
-- `cmd/runtime`: process entrypoint
+- `cmd/runtime`: single process entrypoint (`--mode=runtime|operator`)
 - `pkg/api`: REST API layer
 - `pkg/service`: business use-cases
 - `pkg/store`: in-memory state for chapter bootstrap
 - `pkg/jobs`: background status reporting job
 - `pkg/kube`: kubernetes client bootstrap
+- `pkg/operator`: operator runner/wiring
+- `pkg/operator/apis`: CRD API types
+- `pkg/operator/controllers`: reconcile logic
 - `deploy/k8s`: minimal manifests
+- `deploy/operator`: operator CRD and samples
 - `docs/chapters`: article chapters
 - `.github/workflows`: CI/CD pipelines
 

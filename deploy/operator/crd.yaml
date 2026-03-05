@@ -1,0 +1,53 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: stockpools.runtime.lokiwager.io
+spec:
+  group: runtime.lokiwager.io
+  names:
+    kind: StockPool
+    listKind: StockPoolList
+    plural: stockpools
+    singular: stockpool
+    shortNames:
+      - sp
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                specName:
+                  type: string
+                replicas:
+                  type: integer
+                  format: int32
+                  minimum: 0
+              required:
+                - specName
+                - replicas
+            status:
+              type: object
+              properties:
+                available:
+                  type: integer
+                  format: int32
+                allocated:
+                  type: integer
+                  format: int32
+                phase:
+                  type: string
+                observedGeneration:
+                  type: integer
+                  format: int64
+                lastSyncTime:
+                  type: string
+                  format: date-time
+      subresources:
+        status: {}

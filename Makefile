@@ -2,10 +2,13 @@ APP_NAME := runtime
 
 GOFILES := $(shell find . -type f -name '*.go' -not -path './vendor/*')
 
-.PHONY: run build test test-race vet fmt fmt-check tidy ci
+.PHONY: run run-operator build test test-race vet fmt fmt-check tidy ci
 
 run:
 	go run ./cmd/runtime
+
+run-operator:
+	go run ./cmd/runtime --mode=operator
 
 build:
 	mkdir -p bin
