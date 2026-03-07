@@ -1,7 +1,7 @@
 package api
 
 import (
-	"encoding/json"
+	"context"
 	"io"
 	"log/slog"
 	"net/http"
@@ -9,14 +9,17 @@ import (
 	"strings"
 	"testing"
 
+	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+
+	runtimev1alpha1 "github.com/loki/gpu-operator-runtime/api/v1alpha1"
 	"github.com/loki/gpu-operator-runtime/pkg/service"
-	"github.com/loki/gpu-operator-runtime/pkg/store"
 )
 
 func newTestHandler(t *testing.T) http.Handler {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	svc := service.New(store.NewMemoryStore(), nil, logger)
+	svc := service.New(nil, nil, logger)
 	return NewServer(svc, logger)
 }
 
@@ -31,30 +34,38 @@ func TestServer_Health(t *testing.T) {
 	}
 }
 
-func TestServer_CreateStockAndVM(t *testing.T) {
+func TestServer_CreateStockPoolJobWithoutOperator(t *testing.T) {
 	h := newTestHandler(t)
-
-	createStockReq := httptest.NewRequest(http.MethodPost, "/api/v1/stocks", strings.NewReader(`{"number":1,"specName":"g1.1"}`))
-	createStockReq.Header.Set("Content-Type", "application/json")
-	createStockW := httptest.NewRecorder()
-	h.ServeHTTP(createStockW, createStockReq)
-	if createStockW.Code != http.StatusCreated {
-		t.Fatalf("expected stock create 201, got %d body=%s", createStockW.Code, createStockW.Body.String())
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/operator/stockpools", strings.NewReader(`{"specName":"g1.1","replicas":1}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", w.Code, w.Body.String())
 	}
+}
 
-	createVMReq := httptest.NewRequest(http.MethodPost, "/api/v1/vms", strings.NewReader(`{"specName":"g1.1","tenantID":"t1"}`))
-	createVMReq.Header.Set("Content-Type", "application/json")
-	createVMW := httptest.NewRecorder()
-	h.ServeHTTP(createVMW, createVMReq)
-	if createVMW.Code != http.StatusCreated {
-		t.Fatalf("expected vm create 201, got %d body=%s", createVMW.Code, createVMW.Body.String())
+func TestServer_CreateStockPoolJob(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := runtimev1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add scheme error: %v", err)
 	}
+	operatorClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 
-	var resp map[string]any
-	if err := json.Unmarshal(createVMW.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("invalid json response: %v", err)
-	}
-	if _, ok := resp["data"]; !ok {
-		t.Fatalf("response should contain data field")
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	svc := service.New(nil, operatorClient, logger)
+	h := NewServer(svc, logger)
+
+	ctx := context.Background()
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go svc.StartOperatorJobWorker(ctx)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/operator/stockpools", strings.NewReader(`{"name":"pool-a","namespace":"default","specName":"g1.1","replicas":1}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d body=%s", w.Code, w.Body.String())
 	}
 }

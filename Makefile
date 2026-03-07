@@ -1,18 +1,18 @@
-APP_NAME := runtime
+APP_NAME := manager
 
 GOFILES := $(shell find . -type f -name '*.go' -not -path './vendor/*')
+LOCALBIN ?= $(shell pwd)/bin
+CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
+CONTROLLER_TOOLS_VERSION ?= v0.20.1
 
-.PHONY: run run-operator build test test-race vet fmt fmt-check tidy ci
+.PHONY: run build test test-race vet fmt fmt-check tidy manifests generate controller-gen ci
 
 run:
-	go run ./cmd/runtime
-
-run-operator:
-	go run ./cmd/runtime --mode=operator
+	go run ./cmd/main.go
 
 build:
 	mkdir -p bin
-	go build -o bin/$(APP_NAME) ./cmd/runtime
+	go build -o bin/$(APP_NAME) ./cmd/main.go
 
 test:
 	go test ./...
@@ -37,4 +37,16 @@ fmt-check:
 tidy:
 	go mod tidy
 
-ci: fmt-check vet test-race build
+manifests: controller-gen
+	"$(CONTROLLER_GEN)" rbac:roleName=manager-role crd paths="./..." output:crd:artifacts:config=config/crd/bases
+
+generate: controller-gen
+	"$(CONTROLLER_GEN)" object:headerFile="hack/boilerplate.go.txt" paths="./..."
+
+controller-gen:
+	@test -s "$(CONTROLLER_GEN)" || { \
+		echo "Installing controller-gen $(CONTROLLER_TOOLS_VERSION)"; \
+		GOBIN="$(LOCALBIN)" go install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_TOOLS_VERSION); \
+	}
+
+ci: manifests generate fmt-check vet test-race build

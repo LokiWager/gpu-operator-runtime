@@ -40,10 +40,7 @@ func (r *StatusReporter) Start(ctx context.Context) {
 			r.logger.Info("runtime status",
 				"kubeConnected", health.KubernetesConnected,
 				"nodeCount", health.NodeCount,
-				"stocks", health.Summary.TotalStocks,
-				"stocksAvailable", health.Summary.AvailableStocks,
-				"vms", health.Summary.TotalVMs,
-				"vmsRunning", health.Summary.RunningVMs,
+				"stockPools", health.StockPoolCount,
 			)
 		}
 	}

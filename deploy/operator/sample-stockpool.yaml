@@ -1,8 +1,0 @@
-apiVersion: runtime.lokiwager.io/v1alpha1
-kind: StockPool
-metadata:
-  name: pool-g1
-  namespace: default
-spec:
-  specName: g1.1
-  replicas: 3

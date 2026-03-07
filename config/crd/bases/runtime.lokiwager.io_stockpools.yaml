@@ -1,0 +1,94 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.1
+  name: stockpools.runtime.lokiwager.io
+spec:
+  group: runtime.lokiwager.io
+  names:
+    kind: StockPool
+    listKind: StockPoolList
+    plural: stockpools
+    singular: stockpool
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.specName
+      name: Spec
+      type: string
+    - jsonPath: .spec.replicas
+      name: Desired
+      type: integer
+    - jsonPath: .status.available
+      name: Available
+      type: integer
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: StockPool is the Schema for the stockpools API.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: StockPoolSpec defines the desired state of StockPool.
+            properties:
+              replicas:
+                description: Replicas controls how many runtime workers should exist
+                  for this pool.
+                format: int32
+                minimum: 0
+                type: integer
+              specName:
+                description: SpecName describes the target GPU flavor requested by
+                  users, for example "g1.1".
+                type: string
+            required:
+            - replicas
+            - specName
+            type: object
+          status:
+            description: StockPoolStatus defines the observed state of StockPool.
+            properties:
+              allocated:
+                format: int32
+                type: integer
+              available:
+                format: int32
+                type: integer
+              lastSyncTime:
+                format: date-time
+                type: string
+              observedGeneration:
+                format: int64
+                type: integer
+              phase:
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

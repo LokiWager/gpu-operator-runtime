@@ -1,80 +1,63 @@
-# Chapter 02 - Minimal Operator Skeleton
+# Chapter 02 - Kubebuilder Baseline + First Real Reconcile
 
-This chapter introduces the first operator loop for the runtime project.
+This chapter migrates the project to a standard `kubebuilder` scaffold and keeps the architecture as one process:
 
-Scope:
+- HTTP server handles user request
+- request becomes async job
+- job creates `StockPool` CR
+- controller reconciles CR to Deployment and status
 
-- define one CRD (`StockPool`)
-- run a `controller-runtime` manager
-- implement one reconcile flow that writes status
-- keep business state simple and deterministic
+## Why we switched to kubebuilder
 
-Out of scope:
+Manual operator wiring is okay for prototyping, but it becomes hard to maintain quickly:
 
-- real provisioning jobs
-- final scheduling policy
-- storage and network integration
+- structure is non-standard
+- CRD/RBAC/codegen are easy to drift
+- onboarding cost is higher
 
-## Why this chapter exists
+`kubebuilder` gives us a shared baseline that most Go/Kubernetes engineers can recognize immediately.
 
-Chapter 01 proved the runtime service can run and expose stable APIs.
-Now we need a Kubernetes-native control loop so the project can move from request-driven behavior to desired-state behavior.
+## What changed in this iteration
 
-## What we add
+1. Initialize standard project skeleton:
+   - `PROJECT`
+   - `api/v1alpha1`
+   - `internal/controller`
+   - `config/*`
+2. Keep a single binary entry:
+   - `cmd/main.go`
+3. Keep HTTP + operator manager in one process:
+   - no runtime/operator split mode
+4. Remove obsolete bootstrap-only paths:
+   - in-memory stock/vm runtime simulation
 
-1. CRD API type:
-   - `pkg/operator/apis/runtime/v1alpha1/stockpool_types.go`
-2. Reconciler:
-   - `pkg/operator/controllers/stockpool_controller.go`
-3. Operator runner and entrypoint integration:
-   - `pkg/operator/runner.go`
-   - `cmd/runtime/main.go` (`--mode=operator`)
-4. CRD and sample manifest:
-   - `deploy/operator/crd.yaml`
-   - `deploy/operator/sample-stockpool.yaml`
-5. Unit test:
-   - `pkg/operator/controllers/stockpool_controller_test.go`
+## Main files
 
-## Reconcile behavior in this chapter
+- API type: `api/v1alpha1/stockpool_types.go`
+- Controller: `internal/controller/stockpool_controller.go`
+- Entry: `cmd/main.go`
+- HTTP layer: `pkg/api/server.go`
+- Service/job flow: `pkg/service/service.go`
 
-Input:
-
-- `spec.specName`
-- `spec.replicas`
-
-Output (status):
-
-- `available`
-- `allocated`
-- `phase`
-- `observedGeneration`
-- `lastSyncTime`
-
-Current policy:
-
-- `available = max(replicas, 0)`
-- `allocated = 0`
-- `phase = Ready` when replicas > 0, else `Empty`
-
-This keeps the first reconcile deterministic and easy to test.
-
-## How to run
+## Run
 
 ```bash
-make tidy
-make test
+make manifests generate
+kubectl apply -f config/crd/bases/runtime.lokiwager.io_stockpools.yaml
+make run
 ```
 
+Create resource via HTTP:
+
 ```bash
-kubectl apply -f deploy/operator/crd.yaml
-kubectl apply -f deploy/operator/sample-stockpool.yaml
-go run ./cmd/runtime --mode=operator
+curl -s -X POST http://127.0.0.1:8080/api/v1/operator/stockpools \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"pool-g1","namespace":"default","specName":"g1.1","replicas":2}' | jq
 ```
+
+Verify controller output:
 
 ```bash
 kubectl get stockpools.runtime.lokiwager.io pool-g1 -o yaml
+kubectl get deploy -n default
 ```
-
-## What comes next
-
-The next chapter will connect reconcile to runtime lifecycle actions (stock acquisition and VM progression) instead of status mirroring only.

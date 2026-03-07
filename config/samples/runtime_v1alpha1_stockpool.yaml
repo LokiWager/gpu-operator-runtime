@@ -1,0 +1,10 @@
+apiVersion: runtime.lokiwager.io/v1alpha1
+kind: StockPool
+metadata:
+  labels:
+    app.kubernetes.io/name: gpu-operator-runtime
+    app.kubernetes.io/managed-by: kustomize
+  name: stockpool-sample
+spec:
+  specName: g1.1
+  replicas: 1
