@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	types "k8s.io/apimachinery/pkg/types"
@@ -34,6 +35,9 @@ func TestReconcileStockPoolStatus(t *testing.T) {
 		},
 		Spec: runtimev1alpha1.StockPoolSpec{
 			SpecName: "g1.1",
+			Image:    "nginx:1.27",
+			Memory:   "16Gi",
+			GPU:      2,
 			Replicas: 3,
 		},
 	}
@@ -61,6 +65,18 @@ func TestReconcileStockPoolStatus(t *testing.T) {
 	}
 	if dep.Spec.Replicas == nil || *dep.Spec.Replicas != 3 {
 		t.Fatalf("unexpected deployment replicas: %+v", dep.Spec.Replicas)
+	}
+	container := dep.Spec.Template.Spec.Containers[0]
+	if container.Image != "nginx:1.27" {
+		t.Fatalf("expected deployment image nginx:1.27, got %s", container.Image)
+	}
+	memoryLimit := container.Resources.Limits[corev1.ResourceMemory]
+	if got := memoryLimit.String(); got != "16Gi" {
+		t.Fatalf("expected memory limit 16Gi, got %s", got)
+	}
+	gpuLimit := container.Resources.Limits[corev1.ResourceName("nvidia.com/gpu")]
+	if got := gpuLimit.Value(); got != 2 {
+		t.Fatalf("expected gpu limit 2, got %d", got)
 	}
 
 	_, err = reconciler.Reconcile(context.Background(), ctrl.Request{

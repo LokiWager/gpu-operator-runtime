@@ -69,3 +69,28 @@ func TestServer_CreateStockPoolJob(t *testing.T) {
 		t.Fatalf("expected 202, got %d body=%s", w.Code, w.Body.String())
 	}
 }
+
+func TestServer_CreateStockPoolJobWithRuntimeFields(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := runtimev1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add scheme error: %v", err)
+	}
+	operatorClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	svc := service.New(nil, operatorClient, logger)
+	h := NewServer(svc, logger)
+
+	ctx := context.Background()
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go svc.StartOperatorJobWorker(ctx)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/operator/stockpools", strings.NewReader(`{"name":"pool-b","namespace":"default","specName":"g2.1","image":"nginx:1.27","memory":"32Gi","gpu":2,"replicas":1}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d body=%s", w.Code, w.Body.String())
+	}
+}

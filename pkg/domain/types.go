@@ -35,6 +35,9 @@ type StockPoolRuntime struct {
 	Name               string    `json:"name"`
 	Namespace          string    `json:"namespace"`
 	SpecName           string    `json:"specName"`
+	Image              string    `json:"image,omitempty"`
+	Memory             string    `json:"memory,omitempty"`
+	GPU                int32     `json:"gpu,omitempty"`
 	DesiredReplicas    int32     `json:"desiredReplicas"`
 	AvailableReplicas  int32     `json:"availableReplicas"`
 	AllocatedReplicas  int32     `json:"allocatedReplicas"`

@@ -6,6 +6,7 @@ This chapter migrates the project to a standard `kubebuilder` scaffold and keeps
 - request becomes async job
 - job creates `StockPool` CR
 - controller reconciles CR to Deployment and status
+- runtime parameters such as `image`, `memory`, and `gpu` flow from API to CR spec
 
 ## Why we switched to kubebuilder
 
@@ -52,7 +53,7 @@ Create resource via HTTP:
 ```bash
 curl -s -X POST http://127.0.0.1:8080/api/v1/operator/stockpools \
   -H 'Content-Type: application/json' \
-  -d '{"name":"pool-g1","namespace":"default","specName":"g1.1","replicas":2}' | jq
+  -d '{"name":"pool-g1","namespace":"default","specName":"g1.1","image":"nginx:1.27","memory":"16Gi","gpu":1,"replicas":2}' | jq
 ```
 
 Verify controller output:

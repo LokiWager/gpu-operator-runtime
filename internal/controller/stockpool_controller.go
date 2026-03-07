@@ -13,6 +13,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -58,7 +59,10 @@ func (r *StockPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			return ctrl.Result{}, err
 		}
 
-		newDep := desiredDeployment(pool, desired)
+		newDep, err := desiredDeployment(pool, desired)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
 		if err := controllerutil.SetControllerReference(&pool, newDep, r.Scheme); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -69,8 +73,22 @@ func (r *StockPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
 	}
 
-	if dep.Spec.Replicas == nil || *dep.Spec.Replicas != desired {
+	needsUpdate := dep.Spec.Replicas == nil || *dep.Spec.Replicas != desired
+	if needsUpdate {
 		dep.Spec.Replicas = ptr.To(desired)
+	}
+
+	expectedTemplate, err := desiredPodTemplate(pool)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if !reflect.DeepEqual(dep.Spec.Template.Spec, expectedTemplate.Spec) ||
+		!reflect.DeepEqual(dep.Spec.Template.Labels, expectedTemplate.Labels) {
+		needsUpdate = true
+		dep.Spec.Template = expectedTemplate
+	}
+
+	if needsUpdate {
 		if err := r.Update(ctx, &dep); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -122,12 +140,16 @@ func statusEqual(a, b runtimev1alpha1.StockPoolStatus) bool {
 	return reflect.DeepEqual(aa, bb)
 }
 
-func desiredDeployment(pool runtimev1alpha1.StockPool, replicas int32) *appsv1.Deployment {
+func desiredDeployment(pool runtimev1alpha1.StockPool, replicas int32) (*appsv1.Deployment, error) {
 	name := deploymentNameForPool(pool.Name)
 	labels := map[string]string{
 		"app.kubernetes.io/name":       "gpu-runtime-stockpool",
 		"app.kubernetes.io/managed-by": "gpu-runtime-operator",
 		"runtime.lokiwager.io/pool":    pool.Name,
+	}
+	template, err := desiredPodTemplate(pool)
+	if err != nil {
+		return nil, err
 	}
 
 	return &appsv1.Deployment{
@@ -139,18 +161,57 @@ func desiredDeployment(pool runtimev1alpha1.StockPool, replicas int32) *appsv1.D
 		Spec: appsv1.DeploymentSpec{
 			Replicas: ptr.To(replicas),
 			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"runtime.lokiwager.io/pool": pool.Name}},
-			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"runtime.lokiwager.io/pool": pool.Name}},
-				Spec: corev1.PodSpec{Containers: []corev1.Container{{
-					Name:            "runtime-placeholder",
-					Image:           "busybox:1.36",
-					ImagePullPolicy: corev1.PullIfNotPresent,
-					Command:         []string{"sh", "-c", "sleep 3600"},
-					Env:             []corev1.EnvVar{{Name: "SPEC_NAME", Value: pool.Spec.SpecName}, {Name: "POOL_NAME", Value: pool.Name}},
-				}}},
-			},
+			Template: template,
 		},
+	}, nil
+}
+
+func desiredPodTemplate(pool runtimev1alpha1.StockPool) (corev1.PodTemplateSpec, error) {
+	labels := map[string]string{"runtime.lokiwager.io/pool": pool.Name}
+	image := pool.Spec.Image
+	if image == "" {
+		image = "busybox:1.36"
 	}
+
+	// Keep the resource mapping explicit in this chapter so readers can see how API input becomes pod spec.
+	resources := corev1.ResourceRequirements{}
+	if pool.Spec.Memory != "" {
+		qty, err := resource.ParseQuantity(pool.Spec.Memory)
+		if err != nil {
+			return corev1.PodTemplateSpec{}, fmt.Errorf("parse memory %q: %w", pool.Spec.Memory, err)
+		}
+		resources.Requests = corev1.ResourceList{corev1.ResourceMemory: qty}
+		resources.Limits = corev1.ResourceList{corev1.ResourceMemory: qty}
+	}
+	if pool.Spec.GPU > 0 {
+		if resources.Requests == nil {
+			resources.Requests = corev1.ResourceList{}
+		}
+		if resources.Limits == nil {
+			resources.Limits = corev1.ResourceList{}
+		}
+		gpuQty := *resource.NewQuantity(int64(pool.Spec.GPU), resource.DecimalSI)
+		resources.Requests[corev1.ResourceName("nvidia.com/gpu")] = gpuQty
+		resources.Limits[corev1.ResourceName("nvidia.com/gpu")] = gpuQty
+	}
+
+	return corev1.PodTemplateSpec{
+		ObjectMeta: metav1.ObjectMeta{Labels: labels},
+		Spec: corev1.PodSpec{Containers: []corev1.Container{{
+			Name:            "runtime-placeholder",
+			Image:           image,
+			ImagePullPolicy: corev1.PullIfNotPresent,
+			Command:         []string{"sh", "-c", "sleep 3600"},
+			// These env vars make it easy to inspect how CR spec values reached the workload.
+			Env: []corev1.EnvVar{
+				{Name: "SPEC_NAME", Value: pool.Spec.SpecName},
+				{Name: "POOL_NAME", Value: pool.Name},
+				{Name: "GPU_COUNT", Value: fmt.Sprintf("%d", pool.Spec.GPU)},
+				{Name: "MEMORY_LIMIT", Value: pool.Spec.Memory},
+			},
+			Resources: resources,
+		}}},
+	}, nil
 }
 
 func deploymentNameForPool(poolName string) string {

@@ -1,4 +1,5 @@
 APP_NAME := manager
+export GOTOOLCHAIN := go1.26.0
 
 GOFILES := $(shell find . -type f -name '*.go' -not -path './vendor/*')
 LOCALBIN ?= $(shell pwd)/bin

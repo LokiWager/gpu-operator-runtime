@@ -37,6 +37,9 @@ func TestService_CreateStockPoolAsync(t *testing.T) {
 		Name:      "pool-g1",
 		Namespace: "default",
 		SpecName:  "g1.1",
+		Image:     "nginx:1.27",
+		Memory:    "16Gi",
+		GPU:       1,
 		Replicas:  2,
 	})
 	if err != nil {
@@ -66,5 +69,14 @@ func TestService_CreateStockPoolAsync(t *testing.T) {
 	}
 	if pool.Spec.Replicas != 2 {
 		t.Fatalf("expected replicas=2, got %d", pool.Spec.Replicas)
+	}
+	if pool.Spec.Image != "nginx:1.27" {
+		t.Fatalf("expected image=nginx:1.27, got %s", pool.Spec.Image)
+	}
+	if pool.Spec.Memory != "16Gi" {
+		t.Fatalf("expected memory=16Gi, got %s", pool.Spec.Memory)
+	}
+	if pool.Spec.GPU != 1 {
+		t.Fatalf("expected gpu=1, got %d", pool.Spec.GPU)
 	}
 }

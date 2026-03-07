@@ -20,7 +20,11 @@ type CreateStockPoolRequest struct {
 	Name      string `json:"name,omitempty"`
 	Namespace string `json:"namespace,omitempty"`
 	SpecName  string `json:"specName"`
-	Replicas  int32  `json:"replicas"`
+	// Image, Memory, and GPU are copied into the CR spec so reconcile can build the workload template.
+	Image    string `json:"image,omitempty"`
+	Memory   string `json:"memory,omitempty"`
+	GPU      int32  `json:"gpu,omitempty"`
+	Replicas int32  `json:"replicas"`
 }
 
 type createStockPoolJob struct {
@@ -78,8 +82,13 @@ func (s *Service) CreateStockPoolAsync(ctx context.Context, req CreateStockPoolR
 	if strings.TrimSpace(req.SpecName) == "" {
 		return domain.OperatorJob{}, fmt.Errorf("specName is required")
 	}
+	req.Image = strings.TrimSpace(req.Image)
+	req.Memory = strings.TrimSpace(req.Memory)
 	if req.Replicas < 0 {
 		return domain.OperatorJob{}, fmt.Errorf("replicas should be >= 0")
+	}
+	if req.GPU < 0 {
+		return domain.OperatorJob{}, fmt.Errorf("gpu should be >= 0")
 	}
 	if strings.TrimSpace(req.Namespace) == "" {
 		req.Namespace = "default"
@@ -146,6 +155,9 @@ func (s *Service) ListStockPools(ctx context.Context, namespace string) ([]domai
 			Name:               item.Name,
 			Namespace:          item.Namespace,
 			SpecName:           item.Spec.SpecName,
+			Image:              item.Spec.Image,
+			Memory:             item.Spec.Memory,
+			GPU:                item.Spec.GPU,
 			DesiredReplicas:    item.Spec.Replicas,
 			AvailableReplicas:  item.Status.Available,
 			AllocatedReplicas:  item.Status.Allocated,
@@ -191,6 +203,7 @@ func (s *Service) Health(ctx context.Context) (domain.HealthStatus, error) {
 }
 
 func (s *Service) createStockPoolObject(ctx context.Context, req CreateStockPoolRequest) error {
+	// The API server never creates Deployments directly. It hands desired state to Kubernetes via the CR.
 	obj := &runtimev1alpha1.StockPool{
 		TypeMeta: metav1.TypeMeta{
 			Kind:       "StockPool",
@@ -202,6 +215,9 @@ func (s *Service) createStockPoolObject(ctx context.Context, req CreateStockPool
 		},
 		Spec: runtimev1alpha1.StockPoolSpec{
 			SpecName: req.SpecName,
+			Image:    req.Image,
+			Memory:   req.Memory,
+			GPU:      req.GPU,
 			Replicas: req.Replicas,
 		},
 	}

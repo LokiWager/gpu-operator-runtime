@@ -55,6 +55,18 @@ spec:
           spec:
             description: StockPoolSpec defines the desired state of StockPool.
             properties:
+              gpu:
+                description: GPU is the number of GPUs requested per runtime worker.
+                format: int32
+                minimum: 0
+                type: integer
+              image:
+                description: Image is the runtime image used by the reconciled workload.
+                type: string
+              memory:
+                description: Memory is the memory request/limit for each runtime worker,
+                  for example "16Gi".
+                type: string
               replicas:
                 description: Replicas controls how many runtime workers should exist
                   for this pool.

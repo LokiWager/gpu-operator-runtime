@@ -19,6 +19,16 @@ type StockPoolSpec struct {
 	// SpecName describes the target GPU flavor requested by users, for example "g1.1".
 	SpecName string `json:"specName"`
 
+	// Image is the runtime image used by the reconciled workload.
+	Image string `json:"image,omitempty"`
+
+	// Memory is the memory request/limit for each runtime worker, for example "16Gi".
+	Memory string `json:"memory,omitempty"`
+
+	// GPU is the number of GPUs requested per runtime worker.
+	// +kubebuilder:validation:Minimum=0
+	GPU int32 `json:"gpu,omitempty"`
+
 	// Replicas controls how many runtime workers should exist for this pool.
 	// +kubebuilder:validation:Minimum=0
 	Replicas int32 `json:"replicas"`

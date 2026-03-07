@@ -42,7 +42,7 @@ Create StockPool job:
 ```bash
 curl -s -X POST http://127.0.0.1:8080/api/v1/operator/stockpools \
   -H 'Content-Type: application/json' \
-  -d '{"name":"pool-g1","namespace":"default","specName":"g1.1","replicas":2}' | jq
+  -d '{"name":"pool-g1","namespace":"default","specName":"g1.1","image":"nginx:1.27","memory":"16Gi","gpu":1,"replicas":2}' | jq
 ```
 
 Query StockPools:
@@ -76,7 +76,7 @@ make ci
 - `cmd/main.go`: unified entrypoint (manager + HTTP + jobs)
 - `api/v1alpha1`: CRD API types (`StockPool`)
 - `internal/controller`: reconcile logic
-- `pkg/api`: REST handlers
+- `pkg/api`: Echo-based REST handlers
 - `pkg/service`: business orchestration and async job flow
 - `pkg/jobs`: periodic status reporter
 - `config/`: kubebuilder manifests (CRD/RBAC/manager/samples)
