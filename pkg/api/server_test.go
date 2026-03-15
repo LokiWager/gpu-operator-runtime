@@ -67,6 +67,20 @@ func TestServer_Swagger(t *testing.T) {
 	}
 }
 
+func TestServer_SwaggerSpec(t *testing.T) {
+	h := newTestHandler(t)
+	req := httptest.NewRequest(http.MethodGet, "/swagger/doc.json", nil)
+	w := httptest.NewRecorder()
+
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "GPU Operator Runtime API") {
+		t.Fatalf("expected swagger spec title in response, got %s", w.Body.String())
+	}
+}
+
 func TestServer_CreateStockPoolJobWithoutOperator(t *testing.T) {
 	h := newTestHandler(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/operator/stockpools", strings.NewReader(`{"operationID":"op-a","specName":"g1.1","replicas":1}`))
