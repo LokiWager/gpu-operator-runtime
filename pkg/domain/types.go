@@ -22,6 +22,7 @@ const (
 
 type OperatorJob struct {
 	ID              string            `json:"id"`
+	OperationID     string            `json:"operationID"`
 	Type            string            `json:"type"`
 	Status          OperatorJobStatus `json:"status"`
 	Error           string            `json:"error,omitempty"`
@@ -44,4 +45,7 @@ type StockPoolRuntime struct {
 	Phase              string    `json:"phase"`
 	ObservedGeneration int64     `json:"observedGeneration"`
 	LastSyncTime       time.Time `json:"lastSyncTime,omitempty"`
+	ServiceName        string    `json:"serviceName,omitempty"`
+	Reason             string    `json:"reason,omitempty"`
+	Message            string    `json:"message,omitempty"`
 }

@@ -1,0 +1,311 @@
+basePath: /api/v1
+definitions:
+  api.APIError:
+    properties:
+      code:
+        type: string
+      message:
+        type: string
+    type: object
+  api.ErrorResponse:
+    properties:
+      error:
+        $ref: '#/definitions/api.APIError'
+    type: object
+  api.HealthResponse:
+    properties:
+      data:
+        $ref: '#/definitions/domain.HealthStatus'
+    type: object
+  api.OperatorJobResponse:
+    properties:
+      data:
+        $ref: '#/definitions/domain.OperatorJob'
+    type: object
+  api.StockPoolListResponse:
+    properties:
+      data:
+        items:
+          $ref: '#/definitions/domain.StockPoolRuntime'
+        type: array
+    type: object
+  domain.HealthStatus:
+    properties:
+      kubeError:
+        type: string
+      kubernetesConnected:
+        type: boolean
+      nodeCount:
+        type: integer
+      startedAt:
+        type: string
+      stockPoolCount:
+        type: integer
+      uptimeSeconds:
+        type: integer
+    type: object
+  domain.OperatorJob:
+    properties:
+      createdAt:
+        type: string
+      error:
+        type: string
+      id:
+        type: string
+      objectName:
+        type: string
+      objectNamespace:
+        type: string
+      operationID:
+        type: string
+      status:
+        $ref: '#/definitions/domain.OperatorJobStatus'
+      type:
+        type: string
+      updatedAt:
+        type: string
+    type: object
+  domain.OperatorJobStatus:
+    enum:
+    - pending
+    - running
+    - succeeded
+    - failed
+    type: string
+    x-enum-varnames:
+    - OperatorJobPending
+    - OperatorJobRunning
+    - OperatorJobSucceeded
+    - OperatorJobFailed
+  domain.StockPoolRuntime:
+    properties:
+      allocatedReplicas:
+        type: integer
+      availableReplicas:
+        type: integer
+      desiredReplicas:
+        type: integer
+      gpu:
+        type: integer
+      image:
+        type: string
+      lastSyncTime:
+        type: string
+      memory:
+        type: string
+      message:
+        type: string
+      name:
+        type: string
+      namespace:
+        type: string
+      observedGeneration:
+        type: integer
+      phase:
+        type: string
+      reason:
+        type: string
+      serviceName:
+        type: string
+      specName:
+        type: string
+    type: object
+  service.CreateStockPoolRequest:
+    properties:
+      gpu:
+        type: integer
+      image:
+        type: string
+      memory:
+        type: string
+      name:
+        type: string
+      namespace:
+        type: string
+      operationID:
+        type: string
+      replicas:
+        type: integer
+      specName:
+        type: string
+      template:
+        $ref: '#/definitions/v1alpha1.StockPoolTemplate'
+    type: object
+  v1.Protocol:
+    enum:
+    - TCP
+    - UDP
+    - SCTP
+    type: string
+    x-enum-varnames:
+    - ProtocolTCP
+    - ProtocolUDP
+    - ProtocolSCTP
+  v1alpha1.StockPoolEnvVar:
+    properties:
+      name:
+        type: string
+      value:
+        type: string
+    type: object
+  v1alpha1.StockPoolPortSpec:
+    properties:
+      name:
+        type: string
+      port:
+        description: |-
+          +kubebuilder:validation:Minimum=1
+          +kubebuilder:validation:Maximum=65535
+        type: integer
+      protocol:
+        $ref: '#/definitions/v1.Protocol'
+    type: object
+  v1alpha1.StockPoolTemplate:
+    properties:
+      args:
+        items:
+          type: string
+        type: array
+      command:
+        items:
+          type: string
+        type: array
+      envs:
+        items:
+          $ref: '#/definitions/v1alpha1.StockPoolEnvVar'
+        type: array
+      ports:
+        items:
+          $ref: '#/definitions/v1alpha1.StockPoolPortSpec'
+        type: array
+    type: object
+info:
+  contact:
+    name: API Support
+  description: Control-plane API for the GPU operator runtime tutorial project.
+  license:
+    name: Apache 2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0.html
+  title: GPU Operator Runtime API
+  version: "1.0"
+paths:
+  /health:
+    get:
+      description: Return process and Kubernetes connectivity health for the runtime
+        server.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.HealthResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+      summary: Health check
+      tags:
+      - system
+  /operator/jobs/{operationID}:
+    get:
+      description: Get the current state of an asynchronous stock pool creation operation.
+      parameters:
+      - description: Operation ID
+        in: path
+        name: operationID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.OperatorJobResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+      summary: Get operation status
+      tags:
+      - operator
+  /operator/stockpools:
+    get:
+      description: List StockPool custom resources and their observed runtime state.
+      parameters:
+      - description: Namespace filter
+        in: query
+        name: namespace
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.StockPoolListResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+      summary: List stock pools
+      tags:
+      - operator
+    post:
+      consumes:
+      - application/json
+      description: Submit a StockPool creation request. Replays with the same operationID
+        and payload are idempotent.
+      parameters:
+      - description: Create stock pool request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/service.CreateStockPoolRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.OperatorJobResponse'
+        "202":
+          description: Accepted
+          schema:
+            $ref: '#/definitions/api.OperatorJobResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+      summary: Create a stock pool operation
+      tags:
+      - operator
+schemes:
+- http
+swagger: "2.0"

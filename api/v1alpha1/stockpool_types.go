@@ -5,6 +5,7 @@ Copyright 2026.
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -12,7 +13,61 @@ const (
 	PhaseReady       = "Ready"
 	PhaseEmpty       = "Empty"
 	PhaseProgressing = "Progressing"
+	PhaseFailed      = "Failed"
+
+	ConditionReady = "Ready"
+
+	ReasonScaledToZero          = "ScaledToZero"
+	ReasonDeploymentProgressing = "DeploymentProgressing"
+	ReasonDeploymentReady       = "DeploymentReady"
+	ReasonInvalidSpec           = "InvalidSpec"
+	ReasonPodStartupFailed      = "PodStartupFailed"
+	ReasonPodStatusSyncFailed   = "PodStatusSyncFailed"
+	ReasonServiceSyncFailed     = "ServiceSyncFailed"
+	ReasonDeploymentSyncFailed  = "DeploymentSyncFailed"
+
+	LabelAppNameKey                    = "app.kubernetes.io/name"
+	LabelManagedByKey                  = "app.kubernetes.io/managed-by"
+	LabelPoolKey                       = "runtime.lokiwager.io/pool"
+	LabelAppNameValue                  = "gpu-runtime-stockpool"
+	LabelManagedByValue                = "gpu-runtime-operator"
+	EnvSpecName                        = "SPEC_NAME"
+	EnvPoolName                        = "POOL_NAME"
+	EnvGPUCount                        = "GPU_COUNT"
+	EnvMemoryLimit                     = "MEMORY_LIMIT"
+	StatusMessageScaledToZero          = "StockPool is scaled to zero replicas."
+	StatusMessageDeploymentReady       = "Deployment has enough available replicas."
+	StatusMessageDeploymentProgressing = "Waiting for runtime workers to become available."
+	DefaultRuntimeImage                = "busybox:1.36"
+	NVIDIAGPUResourceName              = "nvidia.com/gpu"
+	RuntimeWorkerContainerName         = "runtime-worker"
+	RuntimeCommandShell                = "sh"
+	RuntimeCommandShellFlag            = "-c"
+	RuntimeCommandSleep                = "sleep 3600"
+	StockPoolResourceNamePrefix        = "pool-"
+	AnnotationOperationID              = "runtime.lokiwager.io/operation-id"
+	AnnotationRequestHash              = "runtime.lokiwager.io/request-hash"
 )
+
+type StockPoolTemplate struct {
+	Command []string            `json:"command,omitempty"`
+	Args    []string            `json:"args,omitempty"`
+	Envs    []StockPoolEnvVar   `json:"envs,omitempty"`
+	Ports   []StockPoolPortSpec `json:"ports,omitempty"`
+}
+
+type StockPoolEnvVar struct {
+	Name  string `json:"name"`
+	Value string `json:"value,omitempty"`
+}
+
+type StockPoolPortSpec struct {
+	Name string `json:"name"`
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=65535
+	Port     int32           `json:"port"`
+	Protocol corev1.Protocol `json:"protocol,omitempty"`
+}
 
 // StockPoolSpec defines the desired state of StockPool.
 type StockPoolSpec struct {
@@ -32,15 +87,20 @@ type StockPoolSpec struct {
 	// Replicas controls how many runtime workers should exist for this pool.
 	// +kubebuilder:validation:Minimum=0
 	Replicas int32 `json:"replicas"`
+
+	// Template is the first runtime-facing slice of pod configuration that we expose through the API.
+	Template StockPoolTemplate `json:"template,omitempty"`
 }
 
 // StockPoolStatus defines the observed state of StockPool.
 type StockPoolStatus struct {
-	Available          int32       `json:"available,omitempty"`
-	Allocated          int32       `json:"allocated,omitempty"`
-	Phase              string      `json:"phase,omitempty"`
-	ObservedGeneration int64       `json:"observedGeneration,omitempty"`
-	LastSyncTime       metav1.Time `json:"lastSyncTime,omitempty"`
+	Available          int32              `json:"available,omitempty"`
+	Allocated          int32              `json:"allocated,omitempty"`
+	Phase              string             `json:"phase,omitempty"`
+	ObservedGeneration int64              `json:"observedGeneration,omitempty"`
+	LastSyncTime       metav1.Time        `json:"lastSyncTime,omitempty"`
+	ServiceName        string             `json:"serviceName,omitempty"`
+	Conditions         []metav1.Condition `json:"conditions,omitempty"`
 }
 
 // +kubebuilder:object:root=true

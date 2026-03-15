@@ -5,8 +5,10 @@ GOFILES := $(shell find . -type f -name '*.go' -not -path './vendor/*')
 LOCALBIN ?= $(shell pwd)/bin
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 CONTROLLER_TOOLS_VERSION ?= v0.20.1
+SWAG ?= $(LOCALBIN)/swag
+SWAG_VERSION ?= v1.16.4
 
-.PHONY: run build test test-race vet fmt fmt-check tidy manifests generate controller-gen ci
+.PHONY: run build test test-race vet fmt fmt-check tidy manifests generate swagger controller-gen swag ci
 
 run:
 	go run ./cmd/main.go
@@ -44,10 +46,19 @@ manifests: controller-gen
 generate: controller-gen
 	"$(CONTROLLER_GEN)" object:headerFile="hack/boilerplate.go.txt" paths="./..."
 
+swagger: swag
+	"$(SWAG)" init -g doc.go -d pkg/api,pkg/service,pkg/domain,api/v1alpha1 -o docs/swagger --parseDependency --parseInternal
+
 controller-gen:
 	@test -s "$(CONTROLLER_GEN)" || { \
 		echo "Installing controller-gen $(CONTROLLER_TOOLS_VERSION)"; \
 		GOBIN="$(LOCALBIN)" go install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_TOOLS_VERSION); \
 	}
 
-ci: manifests generate fmt-check vet test-race build
+swag:
+	@test -s "$(SWAG)" || { \
+		echo "Installing swag $(SWAG_VERSION)"; \
+		GOBIN="$(LOCALBIN)" go install github.com/swaggo/swag/cmd/swag@$(SWAG_VERSION); \
+	}
+
+ci: manifests generate swagger fmt-check vet test-race build
