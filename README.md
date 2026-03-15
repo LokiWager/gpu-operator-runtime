@@ -13,6 +13,32 @@ This repository now follows a standard `kubebuilder` layout and runs as a single
 - Go 1.26+
 - A reachable Kubernetes cluster (`KUBECONFIG` or in-cluster config)
 
+## GPU Prerequisite
+
+This project maps GPU requests to the standard Kubernetes resource name `nvidia.com/gpu`.
+
+That means the cluster must already expose NVIDIA GPU resources before a `StockPool` with `gpu > 0` can schedule successfully.
+
+In practice, the simplest setup is:
+
+- install the NVIDIA GPU Operator on the cluster
+
+Equivalent setups also work, as long as the cluster already has the required NVIDIA pieces installed and `nvidia.com/gpu` appears on the nodes:
+
+- NVIDIA drivers
+- container runtime integration
+- NVIDIA device plugin
+
+You can verify that the cluster is ready with:
+
+```bash
+kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.allocatable.nvidia\.com/gpu}{"\n"}{end}'
+```
+
+If that value is empty, a request like `"gpu": 1` will not run, and the reconciled pods will stay pending.
+
+For API and controller development on a cluster without GPU support, use `gpu: 0`.
+
 ## Run locally
 
 ```bash
@@ -42,7 +68,7 @@ Create StockPool job:
 ```bash
 curl -s -X POST http://127.0.0.1:8080/api/v1/operator/stockpools \
   -H 'Content-Type: application/json' \
-  -d '{"name":"pool-g1","namespace":"default","specName":"g1.1","image":"nginx:1.27","memory":"16Gi","gpu":1,"replicas":2}' | jq
+  -d '{"operationID":"stock-g1-demo-001","name":"pool-g1","namespace":"default","specName":"g1.1","image":"nginx:1.27","memory":"16Gi","gpu":1,"replicas":2}' | jq
 ```
 
 Query StockPools:
