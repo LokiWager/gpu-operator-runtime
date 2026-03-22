@@ -9,7 +9,10 @@ import (
 	"strings"
 	"testing"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	runtimev1alpha1 "github.com/loki/gpu-operator-runtime/api/v1alpha1"
@@ -23,7 +26,7 @@ func newTestHandler(t *testing.T) http.Handler {
 	return NewServer(svc, logger)
 }
 
-func newOperatorBackedHandler(t *testing.T) (http.Handler, *service.Service, context.CancelFunc) {
+func newOperatorBackedHandler(t *testing.T) (http.Handler, *service.Service, ctrlclient.Client, context.CancelFunc) {
 	t.Helper()
 
 	scheme := runtime.NewScheme()
@@ -32,7 +35,7 @@ func newOperatorBackedHandler(t *testing.T) (http.Handler, *service.Service, con
 	}
 	operatorClient := fake.NewClientBuilder().
 		WithScheme(scheme).
-		WithStatusSubresource(&runtimev1alpha1.StockPool{}).
+		WithStatusSubresource(&runtimev1alpha1.GPUUnit{}).
 		Build()
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -42,7 +45,7 @@ func newOperatorBackedHandler(t *testing.T) (http.Handler, *service.Service, con
 	ctx, cancel := context.WithCancel(context.Background())
 	go svc.StartOperatorJobWorker(ctx)
 
-	return h, svc, cancel
+	return h, svc, operatorClient, cancel
 }
 
 func TestServer_Health(t *testing.T) {
@@ -81,9 +84,9 @@ func TestServer_SwaggerSpec(t *testing.T) {
 	}
 }
 
-func TestServer_CreateStockPoolJobWithoutOperator(t *testing.T) {
+func TestServer_CreateStockUnitsJobWithoutOperator(t *testing.T) {
 	h := newTestHandler(t)
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/operator/stockpools", strings.NewReader(`{"operationID":"op-a","specName":"g1.1","replicas":1}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/operator/stock-units", strings.NewReader(`{"operationID":"op-a","specName":"g1.1","replicas":1}`))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
@@ -92,11 +95,11 @@ func TestServer_CreateStockPoolJobWithoutOperator(t *testing.T) {
 	}
 }
 
-func TestServer_CreateStockPoolJob(t *testing.T) {
-	h, _, cancel := newOperatorBackedHandler(t)
+func TestServer_CreateStockUnitsJob(t *testing.T) {
+	h, _, _, cancel := newOperatorBackedHandler(t)
 	defer cancel()
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/operator/stockpools", strings.NewReader(`{"operationID":"op-create-1","name":"pool-a","namespace":"default","specName":"g1.1","replicas":1}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/operator/stock-units", strings.NewReader(`{"operationID":"op-create-1","specName":"g1.1","replicas":1}`))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
@@ -105,13 +108,13 @@ func TestServer_CreateStockPoolJob(t *testing.T) {
 	}
 }
 
-func TestServer_CreateStockPoolJob_IsIdempotent(t *testing.T) {
-	h, _, cancel := newOperatorBackedHandler(t)
+func TestServer_CreateStockUnitsJob_IsIdempotent(t *testing.T) {
+	h, _, _, cancel := newOperatorBackedHandler(t)
 	defer cancel()
 
-	body := `{"operationID":"op-create-2","name":"pool-b","namespace":"default","specName":"g2.1","replicas":1}`
+	body := `{"operationID":"op-create-2","specName":"g2.1","replicas":1}`
 
-	req1 := httptest.NewRequest(http.MethodPost, "/api/v1/operator/stockpools", strings.NewReader(body))
+	req1 := httptest.NewRequest(http.MethodPost, "/api/v1/operator/stock-units", strings.NewReader(body))
 	req1.Header.Set("Content-Type", "application/json")
 	w1 := httptest.NewRecorder()
 	h.ServeHTTP(w1, req1)
@@ -119,7 +122,7 @@ func TestServer_CreateStockPoolJob_IsIdempotent(t *testing.T) {
 		t.Fatalf("expected 202, got %d body=%s", w1.Code, w1.Body.String())
 	}
 
-	req2 := httptest.NewRequest(http.MethodPost, "/api/v1/operator/stockpools", strings.NewReader(body))
+	req2 := httptest.NewRequest(http.MethodPost, "/api/v1/operator/stock-units", strings.NewReader(body))
 	req2.Header.Set("Content-Type", "application/json")
 	w2 := httptest.NewRecorder()
 	h.ServeHTTP(w2, req2)
@@ -128,11 +131,11 @@ func TestServer_CreateStockPoolJob_IsIdempotent(t *testing.T) {
 	}
 }
 
-func TestServer_CreateStockPoolJob_RejectsConflict(t *testing.T) {
-	h, _, cancel := newOperatorBackedHandler(t)
+func TestServer_CreateStockUnitsJob_RejectsConflict(t *testing.T) {
+	h, _, _, cancel := newOperatorBackedHandler(t)
 	defer cancel()
 
-	req1 := httptest.NewRequest(http.MethodPost, "/api/v1/operator/stockpools", strings.NewReader(`{"operationID":"op-create-3","name":"pool-c","namespace":"default","specName":"g1.1","replicas":1}`))
+	req1 := httptest.NewRequest(http.MethodPost, "/api/v1/operator/stock-units", strings.NewReader(`{"operationID":"op-create-3","specName":"g1.1","replicas":1}`))
 	req1.Header.Set("Content-Type", "application/json")
 	w1 := httptest.NewRecorder()
 	h.ServeHTTP(w1, req1)
@@ -140,11 +143,115 @@ func TestServer_CreateStockPoolJob_RejectsConflict(t *testing.T) {
 		t.Fatalf("expected 202, got %d body=%s", w1.Code, w1.Body.String())
 	}
 
-	req2 := httptest.NewRequest(http.MethodPost, "/api/v1/operator/stockpools", strings.NewReader(`{"operationID":"op-create-3","name":"pool-c","namespace":"default","specName":"g2.1","replicas":1}`))
+	req2 := httptest.NewRequest(http.MethodPost, "/api/v1/operator/stock-units", strings.NewReader(`{"operationID":"op-create-3","specName":"g2.1","replicas":1}`))
 	req2.Header.Set("Content-Type", "application/json")
 	w2 := httptest.NewRecorder()
 	h.ServeHTTP(w2, req2)
 	if w2.Code != http.StatusConflict {
 		t.Fatalf("expected 409, got %d body=%s", w2.Code, w2.Body.String())
+	}
+}
+
+func TestServer_CreateGPUUnit(t *testing.T) {
+	h, _, operatorClient, cancel := newOperatorBackedHandler(t)
+	defer cancel()
+
+	seedAPIStockUnit(t, operatorClient, "stock-g1-001", runtimev1alpha1.PhaseReady)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/gpu-units", strings.NewReader(`{"operationID":"gpu-op-1","name":"demo-instance","specName":"g1.1","image":"pytorch:2.6","template":{"ports":[{"name":"http","port":8080}]},"access":{"primaryPort":"http","scheme":"http"}}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestServer_GPUUnitCrud(t *testing.T) {
+	h, _, operatorClient, cancel := newOperatorBackedHandler(t)
+	defer cancel()
+
+	seedAPIStockUnit(t, operatorClient, "stock-g1-001", runtimev1alpha1.PhaseReady)
+	seedAPIStockUnit(t, operatorClient, "stock-g1-002", runtimev1alpha1.PhaseReady)
+
+	createReq := httptest.NewRequest(http.MethodPost, "/api/v1/gpu-units", strings.NewReader(`{"operationID":"gpu-op-2","name":"demo-instance","specName":"g1.1","image":"python:3.12","template":{"ports":[{"name":"http","port":8080}]},"access":{"primaryPort":"http","scheme":"http"}}`))
+	createReq.Header.Set("Content-Type", "application/json")
+	createW := httptest.NewRecorder()
+	h.ServeHTTP(createW, createReq)
+	if createW.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d body=%s", createW.Code, createW.Body.String())
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/api/v1/gpu-units/demo-instance?namespace=runtime-instance", nil)
+	getW := httptest.NewRecorder()
+	h.ServeHTTP(getW, getReq)
+	if getW.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", getW.Code, getW.Body.String())
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/api/v1/gpu-units?namespace=runtime-instance", nil)
+	listW := httptest.NewRecorder()
+	h.ServeHTTP(listW, listReq)
+	if listW.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", listW.Code, listW.Body.String())
+	}
+
+	updateReq := httptest.NewRequest(http.MethodPut, "/api/v1/gpu-units/demo-instance?namespace=runtime-instance", strings.NewReader(`{"image":"pytorch:2.6","template":{"ports":[{"name":"web","port":7860}]},"access":{"primaryPort":"web","scheme":"http"}}`))
+	updateReq.Header.Set("Content-Type", "application/json")
+	updateW := httptest.NewRecorder()
+	h.ServeHTTP(updateW, updateReq)
+	if updateW.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", updateW.Code, updateW.Body.String())
+	}
+
+	deleteReq := httptest.NewRequest(http.MethodDelete, "/api/v1/gpu-units/demo-instance?namespace=runtime-instance", nil)
+	deleteW := httptest.NewRecorder()
+	h.ServeHTTP(deleteW, deleteReq)
+	if deleteW.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d body=%s", deleteW.Code, deleteW.Body.String())
+	}
+}
+
+func seedAPIStockUnit(t *testing.T, operatorClient ctrlclient.Client, unitName, phase string) {
+	t.Helper()
+
+	ctx := context.Background()
+
+	unit := &runtimev1alpha1.GPUUnit{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      unitName,
+			Namespace: runtimev1alpha1.DefaultStockNamespace,
+			Labels: map[string]string{
+				runtimev1alpha1.LabelUnitKey: unitName,
+			},
+		},
+		Spec: runtimev1alpha1.GPUUnitSpec{
+			SpecName: "g1.1",
+			Image:    runtimev1alpha1.StockReservationImage,
+			Memory:   "16Gi",
+			GPU:      1,
+		},
+		Status: runtimev1alpha1.GPUUnitStatus{
+			Phase: phase,
+			Conditions: []metav1.Condition{{
+				Type:    runtimev1alpha1.ConditionReady,
+				Status:  metav1.ConditionFalse,
+				Reason:  runtimev1alpha1.ReasonStockNotReady,
+				Message: runtimev1alpha1.StatusMessageStockWait,
+			}},
+		},
+	}
+	if phase == runtimev1alpha1.PhaseReady {
+		unit.Status.ReadyReplicas = 1
+		unit.Status.Conditions[0].Status = metav1.ConditionTrue
+		unit.Status.Conditions[0].Reason = runtimev1alpha1.ReasonStockReady
+		unit.Status.Conditions[0].Message = runtimev1alpha1.StatusMessageStockReady
+	}
+
+	if err := operatorClient.Create(ctx, unit); err != nil && !apierrors.IsAlreadyExists(err) {
+		t.Fatalf("create stock unit error: %v", err)
+	}
+	if err := operatorClient.Status().Update(ctx, unit); err != nil {
+		t.Fatalf("update stock unit status error: %v", err)
 	}
 }

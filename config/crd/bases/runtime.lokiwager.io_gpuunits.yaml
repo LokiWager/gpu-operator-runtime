@@ -4,28 +4,25 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.20.1
-  name: stockpools.runtime.lokiwager.io
+  name: gpuunits.runtime.lokiwager.io
 spec:
   group: runtime.lokiwager.io
   names:
-    kind: StockPool
-    listKind: StockPoolList
-    plural: stockpools
-    singular: stockpool
+    kind: GPUUnit
+    listKind: GPUUnitList
+    plural: gpuunits
+    singular: gpuunit
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
     - jsonPath: .spec.specName
       name: Spec
       type: string
-    - jsonPath: .spec.replicas
-      name: Desired
-      type: integer
-    - jsonPath: .status.available
-      name: Available
-      type: integer
     - jsonPath: .status.phase
       name: Phase
+      type: string
+    - jsonPath: .status.accessURL
+      name: Access
       type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
@@ -33,7 +30,7 @@ spec:
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: StockPool is the Schema for the stockpools API.
+        description: GPUUnit is the schema for one stock or active runtime unit.
         properties:
           apiVersion:
             description: |-
@@ -53,33 +50,34 @@ spec:
           metadata:
             type: object
           spec:
-            description: StockPoolSpec defines the desired state of StockPool.
+            description: GPUUnitSpec defines the desired state of GPUUnit.
             properties:
+              access:
+                description: Access describes the primary runtime endpoint.
+                properties:
+                  primaryPort:
+                    type: string
+                  scheme:
+                    type: string
+                type: object
               gpu:
-                description: GPU is the number of GPUs requested per runtime worker.
+                description: GPU is the number of GPUs requested by the unit workload.
                 format: int32
                 minimum: 0
                 type: integer
               image:
-                description: Image is the runtime image used by the reconciled workload.
+                description: Image is the runtime image used by the unit workload.
                 type: string
               memory:
-                description: Memory is the memory request/limit for each runtime worker,
-                  for example "16Gi".
+                description: Memory is the memory request/limit for the unit workload.
                 type: string
-              replicas:
-                description: Replicas controls how many runtime workers should exist
-                  for this pool.
-                format: int32
-                minimum: 0
-                type: integer
               specName:
-                description: SpecName describes the target GPU flavor requested by
-                  users, for example "g1.1".
+                description: SpecName is the requested runtime flavor, for example
+                  "g1.1".
                 type: string
               template:
-                description: Template is the first runtime-facing slice of pod configuration
-                  that we expose through the API.
+                description: Template is the runtime-facing pod slice owned by this
+                  unit.
                 properties:
                   args:
                     items:
@@ -91,6 +89,8 @@ spec:
                     type: array
                   envs:
                     items:
+                      description: GPUUnitEnvVar describes one environment variable
+                        injected into the runtime container.
                       properties:
                         name:
                           type: string
@@ -102,6 +102,8 @@ spec:
                     type: array
                   ports:
                     items:
+                      description: GPUUnitPortSpec declares one named runtime port
+                        and its transport protocol.
                       properties:
                         name:
                           type: string
@@ -121,18 +123,13 @@ spec:
                     type: array
                 type: object
             required:
-            - replicas
             - specName
             type: object
           status:
-            description: StockPoolStatus defines the observed state of StockPool.
+            description: GPUUnitStatus defines the observed state of GPUUnit.
             properties:
-              allocated:
-                format: int32
-                type: integer
-              available:
-                format: int32
-                type: integer
+              accessURL:
+                type: string
               conditions:
                 items:
                   description: Condition contains details for one aspect of the current
@@ -197,6 +194,9 @@ spec:
                 type: integer
               phase:
                 type: string
+              readyReplicas:
+                format: int32
+                type: integer
               serviceName:
                 type: string
             type: object

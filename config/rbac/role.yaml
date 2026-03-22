@@ -39,7 +39,7 @@ rules:
 - apiGroups:
   - runtime.lokiwager.io
   resources:
-  - stockpools
+  - gpuunits
   verbs:
   - create
   - delete
@@ -51,13 +51,13 @@ rules:
 - apiGroups:
   - runtime.lokiwager.io
   resources:
-  - stockpools/finalizers
+  - gpuunits/finalizers
   verbs:
   - update
 - apiGroups:
   - runtime.lokiwager.io
   resources:
-  - stockpools/status
+  - gpuunits/status
   verbs:
   - get
   - patch

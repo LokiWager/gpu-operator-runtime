@@ -7,12 +7,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"reflect"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -24,36 +26,39 @@ import (
 	"github.com/loki/gpu-operator-runtime/pkg/domain"
 )
 
-type CreateStockPoolRequest struct {
-	OperationID string                            `json:"operationID"`
-	Name        string                            `json:"name,omitempty"`
-	Namespace   string                            `json:"namespace,omitempty"`
-	SpecName    string                            `json:"specName"`
-	Image       string                            `json:"image,omitempty"`
-	Memory      string                            `json:"memory,omitempty"`
-	GPU         int32                             `json:"gpu,omitempty"`
-	Replicas    int32                             `json:"replicas"`
-	Template    runtimev1alpha1.StockPoolTemplate `json:"template,omitempty"`
+// CreateStockUnitsRequest describes one idempotent request to seed stock units.
+//
+// Stock units reserve capacity with the built-in stock image. The caller only chooses the stock class and resource envelope.
+type CreateStockUnitsRequest struct {
+	OperationID string `json:"operationID"`
+	SpecName    string `json:"specName"`
+	Memory      string `json:"memory,omitempty"`
+	GPU         int32  `json:"gpu,omitempty"`
+	Replicas    int32  `json:"replicas"`
 }
 
-type createStockPoolJob struct {
+// createStockUnitsJob is the in-memory work item consumed by the async worker.
+type createStockUnitsJob struct {
 	operationID string
 	requestHash string
-	req         CreateStockPoolRequest
+	req         CreateStockUnitsRequest
 }
 
+// Service owns the control-plane business logic behind the HTTP API.
 type Service struct {
 	kube      kubernetes.Interface
 	operator  ctrlclient.Client
 	logger    *slog.Logger
 	startedAt time.Time
 
+	unitMu        sync.Mutex
 	jobMu         sync.RWMutex
 	jobs          map[string]domain.OperatorJob
 	requestHashes map[string]string
-	jobQueue      chan createStockPoolJob
+	jobQueue      chan createStockUnitsJob
 }
 
+// New builds a Service with optional Kubernetes and operator clients.
 func New(kubeClient kubernetes.Interface, operatorClient ctrlclient.Client, logger *slog.Logger) *Service {
 	return &Service{
 		kube:          kubeClient,
@@ -62,10 +67,11 @@ func New(kubeClient kubernetes.Interface, operatorClient ctrlclient.Client, logg
 		startedAt:     time.Now().UTC(),
 		jobs:          map[string]domain.OperatorJob{},
 		requestHashes: map[string]string{},
-		jobQueue:      make(chan createStockPoolJob, 128),
+		jobQueue:      make(chan createStockUnitsJob, 128),
 	}
 }
 
+// StartOperatorJobWorker drains async stock seeding jobs until the context is cancelled.
 func (s *Service) StartOperatorJobWorker(ctx context.Context) {
 	if s.operator == nil {
 		return
@@ -77,7 +83,7 @@ func (s *Service) StartOperatorJobWorker(ctx context.Context) {
 			return
 		case job := <-s.jobQueue:
 			s.setJobRunning(job.operationID)
-			if err := s.createStockPoolObject(ctx, job.operationID, job.requestHash, job.req); err != nil {
+			if err := s.createStockUnits(ctx, job.operationID, job.requestHash, job.req); err != nil {
 				s.setJobFailed(job.operationID, err)
 				continue
 			}
@@ -86,17 +92,18 @@ func (s *Service) StartOperatorJobWorker(ctx context.Context) {
 	}
 }
 
-func (s *Service) CreateStockPoolAsync(ctx context.Context, req CreateStockPoolRequest) (domain.OperatorJob, bool, error) {
+// CreateStockUnitsAsync validates a stock seeding request and enqueues it once per operationID.
+func (s *Service) CreateStockUnitsAsync(ctx context.Context, req CreateStockUnitsRequest) (domain.OperatorJob, bool, error) {
 	if s.operator == nil {
 		return domain.OperatorJob{}, false, &UnavailableError{Message: "operator client is not available"}
 	}
 
-	req, requestHash, err := s.normalizeCreateStockPoolRequest(req)
+	req, requestHash, err := s.normalizeCreateStockUnitsRequest(req)
 	if err != nil {
 		return domain.OperatorJob{}, false, err
 	}
 
-	if job, ok, err := s.findExistingOperation(ctx, req.OperationID, req.Namespace, req.Name, requestHash); err != nil {
+	if job, ok, err := s.findExistingStockOperation(ctx, req.OperationID, requestHash); err != nil {
 		return domain.OperatorJob{}, false, err
 	} else if ok {
 		return job, false, nil
@@ -106,10 +113,10 @@ func (s *Service) CreateStockPoolAsync(ctx context.Context, req CreateStockPoolR
 	job := domain.OperatorJob{
 		ID:              req.OperationID,
 		OperationID:     req.OperationID,
-		Type:            "create_stockpool",
+		Type:            "seed_stock_units",
 		Status:          domain.OperatorJobPending,
-		ObjectName:      req.Name,
-		ObjectNamespace: req.Namespace,
+		ObjectName:      stockUnitBatchName(req.SpecName, req.OperationID),
+		ObjectNamespace: runtimev1alpha1.DefaultStockNamespace,
 		CreatedAt:       now,
 		UpdatedAt:       now,
 	}
@@ -119,7 +126,7 @@ func (s *Service) CreateStockPoolAsync(ctx context.Context, req CreateStockPoolR
 	s.requestHashes[req.OperationID] = requestHash
 	s.jobMu.Unlock()
 
-	s.jobQueue <- createStockPoolJob{
+	s.jobQueue <- createStockUnitsJob{
 		operationID: req.OperationID,
 		requestHash: requestHash,
 		req:         req,
@@ -128,6 +135,7 @@ func (s *Service) CreateStockPoolAsync(ctx context.Context, req CreateStockPoolR
 	return job, true, nil
 }
 
+// GetOperatorJob returns in-memory or reconstructed status for one stock seeding operation.
 func (s *Service) GetOperatorJob(ctx context.Context, operationID string) (domain.OperatorJob, error) {
 	operationID = strings.TrimSpace(operationID)
 	if operationID == "" {
@@ -145,80 +153,33 @@ func (s *Service) GetOperatorJob(ctx context.Context, operationID string) (domai
 		return domain.OperatorJob{}, &NotFoundError{Message: fmt.Sprintf("operation %s not found", operationID)}
 	}
 
-	pool, err := s.findStockPoolByOperationID(ctx, operationID)
+	units, err := s.findStockUnitsByOperationID(ctx, operationID)
 	if err != nil {
 		return domain.OperatorJob{}, err
 	}
-	if pool == nil {
+	if len(units) == 0 {
 		return domain.OperatorJob{}, &NotFoundError{Message: fmt.Sprintf("operation %s not found", operationID)}
 	}
 
-	job = recoveredJobFromPool(operationID, pool)
+	job = recoveredJobFromStockUnits(operationID, units)
 
 	s.jobMu.Lock()
 	s.jobs[operationID] = job
-	s.requestHashes[operationID] = pool.GetAnnotations()[runtimev1alpha1.AnnotationRequestHash]
+	s.requestHashes[operationID] = units[0].GetAnnotations()[runtimev1alpha1.AnnotationRequestHash]
 	s.jobMu.Unlock()
 
 	return job, nil
 }
 
-func (s *Service) ListStockPools(ctx context.Context, namespace string) ([]domain.StockPoolRuntime, error) {
-	if s.operator == nil {
-		return nil, &UnavailableError{Message: "operator client is not available"}
-	}
-
-	ns := strings.TrimSpace(namespace)
-	if ns == "" {
-		ns = metav1.NamespaceAll
-	}
-
-	var list runtimev1alpha1.StockPoolList
-	opts := []ctrlclient.ListOption{}
-	if ns != metav1.NamespaceAll {
-		opts = append(opts, ctrlclient.InNamespace(ns))
-	}
-	if err := s.operator.List(ctx, &list, opts...); err != nil {
-		return nil, err
-	}
-
-	out := make([]domain.StockPoolRuntime, 0, len(list.Items))
-	for _, item := range list.Items {
-		var reason string
-		var message string
-		if cond := apimeta.FindStatusCondition(item.Status.Conditions, runtimev1alpha1.ConditionReady); cond != nil {
-			reason = cond.Reason
-			message = cond.Message
-		}
-
-		out = append(out, domain.StockPoolRuntime{
-			Name:               item.Name,
-			Namespace:          item.Namespace,
-			SpecName:           item.Spec.SpecName,
-			Image:              item.Spec.Image,
-			Memory:             item.Spec.Memory,
-			GPU:                item.Spec.GPU,
-			DesiredReplicas:    item.Spec.Replicas,
-			AvailableReplicas:  item.Status.Available,
-			AllocatedReplicas:  item.Status.Allocated,
-			Phase:              item.Status.Phase,
-			ObservedGeneration: item.Status.ObservedGeneration,
-			LastSyncTime:       item.Status.LastSyncTime.Time,
-			ServiceName:        item.Status.ServiceName,
-			Reason:             reason,
-			Message:            message,
-		})
-	}
-	return out, nil
-}
-
+// Health reports process uptime, cluster reachability, and unit counts.
 func (s *Service) Health(ctx context.Context) (domain.HealthStatus, error) {
 	health := domain.HealthStatus{
 		StartedAt:           s.startedAt,
 		UptimeSeconds:       int64(time.Since(s.startedAt).Seconds()),
 		KubernetesConnected: false,
 		NodeCount:           0,
-		StockPoolCount:      0,
+		StockUnitCount:      0,
+		ActiveUnitCount:     0,
 	}
 
 	if s.kube == nil {
@@ -237,86 +198,67 @@ func (s *Service) Health(ctx context.Context) (domain.HealthStatus, error) {
 	health.NodeCount = len(nodes.Items)
 
 	if s.operator != nil {
-		var pools runtimev1alpha1.StockPoolList
-		if err := s.operator.List(kubeCtx, &pools); err == nil {
-			health.StockPoolCount = len(pools.Items)
+		var units runtimev1alpha1.GPUUnitList
+		if err := s.operator.List(kubeCtx, &units); err == nil {
+			for i := range units.Items {
+				if isStockGPUUnit(&units.Items[i]) {
+					health.StockUnitCount++
+				} else {
+					health.ActiveUnitCount++
+				}
+			}
 		}
 	}
 	return health, nil
 }
 
-func (s *Service) normalizeCreateStockPoolRequest(req CreateStockPoolRequest) (CreateStockPoolRequest, string, error) {
+// normalizeCreateStockUnitsRequest trims, validates, and hashes a stock seeding request.
+func (s *Service) normalizeCreateStockUnitsRequest(req CreateStockUnitsRequest) (CreateStockUnitsRequest, string, error) {
 	req.OperationID = strings.TrimSpace(req.OperationID)
 	if req.OperationID == "" {
-		return CreateStockPoolRequest{}, "", &ValidationError{Message: "operationID is required"}
+		return CreateStockUnitsRequest{}, "", &ValidationError{Message: "operationID is required"}
 	}
 
 	req.SpecName = strings.TrimSpace(req.SpecName)
 	if req.SpecName == "" {
-		return CreateStockPoolRequest{}, "", &ValidationError{Message: "specName is required"}
+		return CreateStockUnitsRequest{}, "", &ValidationError{Message: "specName is required"}
 	}
 
-	req.Namespace = strings.TrimSpace(req.Namespace)
-	if req.Namespace == "" {
-		req.Namespace = "default"
-	}
-	if errs := validation.IsDNS1123Label(req.Namespace); len(errs) > 0 {
-		return CreateStockPoolRequest{}, "", &ValidationError{
-			Message: fmt.Sprintf("namespace %q is invalid: %s", req.Namespace, strings.Join(errs, ", ")),
-		}
-	}
-
-	req.Name = strings.ToLower(strings.TrimSpace(req.Name))
-	if req.Name == "" {
-		req.Name = generatedStockPoolName(req.SpecName, req.OperationID)
-	}
-	if errs := validation.IsDNS1123Subdomain(req.Name); len(errs) > 0 {
-		return CreateStockPoolRequest{}, "", &ValidationError{
-			Message: fmt.Sprintf("name %q is invalid: %s", req.Name, strings.Join(errs, ", ")),
-		}
-	}
-
-	req.Image = strings.TrimSpace(req.Image)
 	req.Memory = strings.TrimSpace(req.Memory)
 	if req.Memory != "" {
 		if _, err := resource.ParseQuantity(req.Memory); err != nil {
-			return CreateStockPoolRequest{}, "", &ValidationError{Message: fmt.Sprintf("memory %q is invalid: %v", req.Memory, err)}
+			return CreateStockUnitsRequest{}, "", &ValidationError{Message: fmt.Sprintf("memory %q is invalid: %v", req.Memory, err)}
 		}
 	}
-	if req.Replicas < 0 {
-		return CreateStockPoolRequest{}, "", &ValidationError{Message: "replicas should be >= 0"}
+	if req.Replicas <= 0 {
+		return CreateStockUnitsRequest{}, "", &ValidationError{Message: "replicas should be > 0"}
 	}
 	if req.GPU < 0 {
-		return CreateStockPoolRequest{}, "", &ValidationError{Message: "gpu should be >= 0"}
+		return CreateStockUnitsRequest{}, "", &ValidationError{Message: "gpu should be >= 0"}
 	}
 
-	template, err := normalizeTemplate(req.Template)
+	requestHash, err := hashCreateStockUnitsRequest(req)
 	if err != nil {
-		return CreateStockPoolRequest{}, "", err
-	}
-	req.Template = template
-
-	requestHash, err := hashCreateRequest(req)
-	if err != nil {
-		return CreateStockPoolRequest{}, "", err
+		return CreateStockUnitsRequest{}, "", err
 	}
 	return req, requestHash, nil
 }
 
-func normalizeTemplate(t runtimev1alpha1.StockPoolTemplate) (runtimev1alpha1.StockPoolTemplate, error) {
+// normalizeTemplate validates the user-controlled pod slice used by active units.
+func normalizeTemplate(t runtimev1alpha1.GPUUnitTemplate) (runtimev1alpha1.GPUUnitTemplate, error) {
 	seenEnvNames := map[string]struct{}{}
 	for i := range t.Envs {
 		t.Envs[i].Name = strings.TrimSpace(t.Envs[i].Name)
 		if t.Envs[i].Name == "" {
-			return runtimev1alpha1.StockPoolTemplate{}, &ValidationError{Message: "template env name is required"}
+			return runtimev1alpha1.GPUUnitTemplate{}, &ValidationError{Message: "template env name is required"}
 		}
 		if errs := validation.IsEnvVarName(t.Envs[i].Name); len(errs) > 0 {
-			return runtimev1alpha1.StockPoolTemplate{}, &ValidationError{
+			return runtimev1alpha1.GPUUnitTemplate{}, &ValidationError{
 				Message: fmt.Sprintf("template env %q is invalid: %s", t.Envs[i].Name, strings.Join(errs, ", ")),
 			}
 		}
 		if _, exists := seenEnvNames[t.Envs[i].Name]; exists {
-			return runtimev1alpha1.StockPoolTemplate{}, &ValidationError{
+			return runtimev1alpha1.GPUUnitTemplate{}, &ValidationError{
 				Message: fmt.Sprintf("template env %q is duplicated", t.Envs[i].Name),
 			}
 		}
@@ -328,15 +270,15 @@ func normalizeTemplate(t runtimev1alpha1.StockPoolTemplate) (runtimev1alpha1.Sto
 	for i := range t.Ports {
 		t.Ports[i].Name = strings.TrimSpace(t.Ports[i].Name)
 		if t.Ports[i].Name == "" {
-			return runtimev1alpha1.StockPoolTemplate{}, &ValidationError{Message: "template port name is required"}
+			return runtimev1alpha1.GPUUnitTemplate{}, &ValidationError{Message: "template port name is required"}
 		}
 		if errs := validation.IsValidPortName(t.Ports[i].Name); len(errs) > 0 {
-			return runtimev1alpha1.StockPoolTemplate{}, &ValidationError{
+			return runtimev1alpha1.GPUUnitTemplate{}, &ValidationError{
 				Message: fmt.Sprintf("template port name %q is invalid: %s", t.Ports[i].Name, strings.Join(errs, ", ")),
 			}
 		}
 		if t.Ports[i].Port <= 0 || t.Ports[i].Port > 65535 {
-			return runtimev1alpha1.StockPoolTemplate{}, &ValidationError{
+			return runtimev1alpha1.GPUUnitTemplate{}, &ValidationError{
 				Message: fmt.Sprintf("template port %d is out of range", t.Ports[i].Port),
 			}
 		}
@@ -344,12 +286,12 @@ func normalizeTemplate(t runtimev1alpha1.StockPoolTemplate) (runtimev1alpha1.Sto
 			t.Ports[i].Protocol = "TCP"
 		}
 		if _, exists := seenPortNames[t.Ports[i].Name]; exists {
-			return runtimev1alpha1.StockPoolTemplate{}, &ValidationError{
+			return runtimev1alpha1.GPUUnitTemplate{}, &ValidationError{
 				Message: fmt.Sprintf("template port name %q is duplicated", t.Ports[i].Name),
 			}
 		}
 		if _, exists := seenPortNumbers[t.Ports[i].Port]; exists {
-			return runtimev1alpha1.StockPoolTemplate{}, &ValidationError{
+			return runtimev1alpha1.GPUUnitTemplate{}, &ValidationError{
 				Message: fmt.Sprintf("template port %d is duplicated", t.Ports[i].Port),
 			}
 		}
@@ -360,16 +302,18 @@ func normalizeTemplate(t runtimev1alpha1.StockPoolTemplate) (runtimev1alpha1.Sto
 	return t, nil
 }
 
-func hashCreateRequest(req CreateStockPoolRequest) (string, error) {
+// hashCreateStockUnitsRequest creates the stable payload hash used for idempotency checks.
+func hashCreateStockUnitsRequest(req CreateStockUnitsRequest) (string, error) {
 	payload, err := json.Marshal(req)
 	if err != nil {
-		return "", fmt.Errorf("marshal create request: %w", err)
+		return "", fmt.Errorf("marshal stock create request: %w", err)
 	}
 	sum := sha256.Sum256(payload)
 	return hex.EncodeToString(sum[:]), nil
 }
 
-func (s *Service) findExistingOperation(ctx context.Context, operationID, namespace, objectName, requestHash string) (domain.OperatorJob, bool, error) {
+// findExistingStockOperation resolves idempotent replays and detects conflicting payload reuse.
+func (s *Service) findExistingStockOperation(ctx context.Context, operationID, requestHash string) (domain.OperatorJob, bool, error) {
 	s.jobMu.RLock()
 	job, jobExists := s.jobs[operationID]
 	existingHash := s.requestHashes[operationID]
@@ -383,145 +327,138 @@ func (s *Service) findExistingOperation(ctx context.Context, operationID, namesp
 		return job, true, nil
 	}
 
-	pool, err := s.findStockPoolByOperationID(ctx, operationID)
+	units, err := s.findStockUnitsByOperationID(ctx, operationID)
 	if err != nil {
 		return domain.OperatorJob{}, false, err
 	}
-	if pool != nil {
-		if pool.GetAnnotations()[runtimev1alpha1.AnnotationRequestHash] != requestHash {
-			return domain.OperatorJob{}, false, &ConflictError{
-				Message: fmt.Sprintf("operation %s already exists with a different request payload", operationID),
-			}
-		}
-		job = recoveredJobFromPool(operationID, pool)
-		s.jobMu.Lock()
-		s.jobs[operationID] = job
-		s.requestHashes[operationID] = requestHash
-		s.jobMu.Unlock()
-		return job, true, nil
-	}
-
-	pool, err = s.findStockPoolByName(ctx, namespace, objectName)
-	if err != nil {
-		return domain.OperatorJob{}, false, err
-	}
-	if pool == nil {
+	if len(units) == 0 {
 		return domain.OperatorJob{}, false, nil
 	}
-
-	existingOperationID := pool.GetAnnotations()[runtimev1alpha1.AnnotationOperationID]
-	if existingOperationID == operationID && pool.GetAnnotations()[runtimev1alpha1.AnnotationRequestHash] == requestHash {
-		job = recoveredJobFromPool(operationID, pool)
-		s.jobMu.Lock()
-		s.jobs[operationID] = job
-		s.requestHashes[operationID] = requestHash
-		s.jobMu.Unlock()
-		return job, true, nil
+	if units[0].GetAnnotations()[runtimev1alpha1.AnnotationRequestHash] != requestHash {
+		return domain.OperatorJob{}, false, &ConflictError{
+			Message: fmt.Sprintf("operation %s already exists with a different request payload", operationID),
+		}
 	}
 
-	return domain.OperatorJob{}, false, &ConflictError{
-		Message: fmt.Sprintf("stockpool name %s/%s is already in use", pool.Namespace, pool.Name),
-	}
+	job = recoveredJobFromStockUnits(operationID, units)
+	s.jobMu.Lock()
+	s.jobs[operationID] = job
+	s.requestHashes[operationID] = requestHash
+	s.jobMu.Unlock()
+	return job, true, nil
 }
 
-func (s *Service) findStockPoolByOperationID(ctx context.Context, operationID string) (*runtimev1alpha1.StockPool, error) {
-	var list runtimev1alpha1.StockPoolList
-	if err := s.operator.List(ctx, &list); err != nil {
+// findStockUnitsByOperationID loads stock units created by one operator request.
+func (s *Service) findStockUnitsByOperationID(ctx context.Context, operationID string) ([]runtimev1alpha1.GPUUnit, error) {
+	var list runtimev1alpha1.GPUUnitList
+	if err := s.operator.List(ctx, &list, ctrlclient.InNamespace(runtimev1alpha1.DefaultStockNamespace)); err != nil {
 		return nil, err
 	}
 
-	var found *runtimev1alpha1.StockPool
+	units := make([]runtimev1alpha1.GPUUnit, 0, len(list.Items))
 	for i := range list.Items {
-		item := &list.Items[i]
-		if item.GetAnnotations()[runtimev1alpha1.AnnotationOperationID] != operationID {
+		if list.Items[i].GetAnnotations()[runtimev1alpha1.AnnotationOperationID] != operationID {
 			continue
 		}
-		if found != nil {
-			return nil, &ConflictError{
-				Message: fmt.Sprintf("multiple stockpools exist for operation %s", operationID),
-			}
-		}
-		found = item.DeepCopy()
+		units = append(units, list.Items[i])
 	}
-	return found, nil
+
+	sort.Slice(units, func(i, j int) bool {
+		if units[i].Name != units[j].Name {
+			return units[i].Name < units[j].Name
+		}
+		return units[i].CreationTimestamp.Time.Before(units[j].CreationTimestamp.Time)
+	})
+
+	return units, nil
 }
 
-func (s *Service) findStockPoolByName(ctx context.Context, namespace, name string) (*runtimev1alpha1.StockPool, error) {
-	var list runtimev1alpha1.StockPoolList
-	if err := s.operator.List(ctx, &list); err != nil {
-		return nil, err
-	}
-
-	for i := range list.Items {
-		if list.Items[i].Namespace == namespace && list.Items[i].Name == name {
-			return list.Items[i].DeepCopy(), nil
-		}
-	}
-	return nil, nil
-}
-
-func recoveredJobFromPool(operationID string, pool *runtimev1alpha1.StockPool) domain.OperatorJob {
-	createdAt := pool.CreationTimestamp.Time
-	if createdAt.IsZero() {
-		createdAt = time.Now().UTC()
-	}
-	updatedAt := pool.Status.LastSyncTime.Time
-	if updatedAt.IsZero() {
+// recoveredJobFromStockUnits rebuilds operator job status from persisted stock units.
+func recoveredJobFromStockUnits(operationID string, units []runtimev1alpha1.GPUUnit) domain.OperatorJob {
+	createdAt := time.Now().UTC()
+	updatedAt := createdAt
+	if len(units) > 0 {
+		createdAt = units[0].CreationTimestamp.Time
 		updatedAt = createdAt
 	}
+	for i := range units {
+		if ts := units[i].CreationTimestamp.Time; !ts.IsZero() && ts.Before(createdAt) {
+			createdAt = ts
+		}
+		if ts := units[i].CreationTimestamp.Time; ts.After(updatedAt) {
+			updatedAt = ts
+		}
+	}
+
+	expectedReplicas := int32(len(units))
+	if raw := strings.TrimSpace(units[0].GetAnnotations()[runtimev1alpha1.AnnotationStockReplicas]); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
+			expectedReplicas = int32(parsed)
+		}
+	}
+
+	status := domain.OperatorJobSucceeded
+	if int32(len(units)) < expectedReplicas {
+		status = domain.OperatorJobRunning
+	}
+
 	return domain.OperatorJob{
 		ID:              operationID,
 		OperationID:     operationID,
-		Type:            "create_stockpool",
-		Status:          domain.OperatorJobSucceeded,
-		ObjectName:      pool.Name,
-		ObjectNamespace: pool.Namespace,
+		Type:            "seed_stock_units",
+		Status:          status,
+		ObjectName:      stockUnitBatchName(units[0].Spec.SpecName, operationID),
+		ObjectNamespace: runtimev1alpha1.DefaultStockNamespace,
 		CreatedAt:       createdAt,
 		UpdatedAt:       updatedAt,
 	}
 }
 
-func (s *Service) createStockPoolObject(ctx context.Context, operationID, requestHash string, req CreateStockPoolRequest) error {
-	obj := &runtimev1alpha1.StockPool{
-		TypeMeta: metav1.TypeMeta{
-			Kind:       "StockPool",
-			APIVersion: runtimev1alpha1.GroupVersion.String(),
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      req.Name,
-			Namespace: req.Namespace,
-			Annotations: map[string]string{
-				runtimev1alpha1.AnnotationOperationID: operationID,
-				runtimev1alpha1.AnnotationRequestHash: requestHash,
-			},
-		},
-		Spec: runtimev1alpha1.StockPoolSpec{
-			SpecName: req.SpecName,
-			Image:    req.Image,
-			Memory:   req.Memory,
-			GPU:      req.GPU,
-			Replicas: req.Replicas,
-			Template: req.Template,
-		},
-	}
+// createStockUnits upserts the desired stock unit set for one operation.
+func (s *Service) createStockUnits(ctx context.Context, operationID, requestHash string, req CreateStockUnitsRequest) error {
+	for ordinal := int32(0); ordinal < req.Replicas; ordinal++ {
+		name := generatedStockUnitName(req.SpecName, operationID, ordinal)
+		desired := desiredStockUnit(req, operationID, requestHash, name, ordinal)
 
-	if err := s.operator.Create(ctx, obj); err != nil {
-		if !apierrors.IsAlreadyExists(err) {
+		var existing runtimev1alpha1.GPUUnit
+		err := s.operator.Get(ctx, types.NamespacedName{Namespace: desired.Namespace, Name: desired.Name}, &existing)
+		if apierrors.IsNotFound(err) {
+			if err := s.operator.Create(ctx, desired); err != nil {
+				return err
+			}
+			continue
+		}
+		if err != nil {
 			return err
 		}
-
-		var existing runtimev1alpha1.StockPool
-		if getErr := s.operator.Get(ctx, types.NamespacedName{Name: req.Name, Namespace: req.Namespace}, &existing); getErr != nil {
-			return getErr
-		}
 		if existing.GetAnnotations()[runtimev1alpha1.AnnotationOperationID] != operationID {
-			return &ConflictError{
-				Message: fmt.Sprintf("stockpool name %s/%s is already in use", existing.Namespace, existing.Name),
-			}
+			return &ConflictError{Message: fmt.Sprintf("stock unit name %s/%s is already in use", existing.Namespace, existing.Name)}
 		}
 		if existing.GetAnnotations()[runtimev1alpha1.AnnotationRequestHash] != requestHash {
-			return &ConflictError{
-				Message: fmt.Sprintf("operation %s already exists with a different request payload", operationID),
+			return &ConflictError{Message: fmt.Sprintf("operation %s already exists with a different request payload", operationID)}
+		}
+
+		needsUpdate := false
+		if !reflect.DeepEqual(existing.Spec, desired.Spec) {
+			existing.Spec = desired.Spec
+			needsUpdate = true
+		}
+
+		labels := mergeManagedMap(existing.Labels, desired.Labels)
+		if !reflect.DeepEqual(existing.Labels, labels) {
+			existing.Labels = labels
+			needsUpdate = true
+		}
+
+		annotations := mergeManagedMap(existing.Annotations, desired.Annotations)
+		if !reflect.DeepEqual(existing.Annotations, annotations) {
+			existing.Annotations = annotations
+			needsUpdate = true
+		}
+
+		if needsUpdate {
+			if err := s.operator.Update(ctx, &existing); err != nil {
+				return err
 			}
 		}
 	}
@@ -529,6 +466,58 @@ func (s *Service) createStockPoolObject(ctx context.Context, operationID, reques
 	return nil
 }
 
+// desiredStockUnit materializes the GPUUnit object stored in the stock namespace.
+func desiredStockUnit(req CreateStockUnitsRequest, operationID, requestHash, name string, ordinal int32) *runtimev1alpha1.GPUUnit {
+	return &runtimev1alpha1.GPUUnit{
+		TypeMeta: metav1.TypeMeta{
+			Kind:       "GPUUnit",
+			APIVersion: runtimev1alpha1.GroupVersion.String(),
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: runtimev1alpha1.DefaultStockNamespace,
+			Labels: map[string]string{
+				runtimev1alpha1.LabelAppNameKey:   runtimev1alpha1.LabelAppNameValue,
+				runtimev1alpha1.LabelManagedByKey: runtimev1alpha1.LabelManagedByValue,
+				runtimev1alpha1.LabelUnitKey:      name,
+			},
+			Annotations: map[string]string{
+				runtimev1alpha1.AnnotationOperationID:   operationID,
+				runtimev1alpha1.AnnotationRequestHash:   requestHash,
+				runtimev1alpha1.AnnotationStockReplicas: strconv.Itoa(int(req.Replicas)),
+				runtimev1alpha1.AnnotationStockOrdinal:  strconv.Itoa(int(ordinal + 1)),
+			},
+		},
+		Spec: runtimev1alpha1.GPUUnitSpec{
+			SpecName: req.SpecName,
+			Image:    runtimev1alpha1.StockReservationImage,
+			Memory:   req.Memory,
+			GPU:      req.GPU,
+		},
+	}
+}
+
+// mergeManagedMap overlays operator-managed keys while preserving unrelated user metadata.
+func mergeManagedMap(current, managed map[string]string) map[string]string {
+	if len(current) == 0 {
+		out := make(map[string]string, len(managed))
+		for key, value := range managed {
+			out[key] = value
+		}
+		return out
+	}
+
+	out := make(map[string]string, len(current)+len(managed))
+	for key, value := range current {
+		out[key] = value
+	}
+	for key, value := range managed {
+		out[key] = value
+	}
+	return out
+}
+
+// setJobRunning marks one in-memory job as running.
 func (s *Service) setJobRunning(operationID string) {
 	s.jobMu.Lock()
 	defer s.jobMu.Unlock()
@@ -539,6 +528,7 @@ func (s *Service) setJobRunning(operationID string) {
 	s.jobs[operationID] = job
 }
 
+// setJobFailed marks one in-memory job as failed.
 func (s *Service) setJobFailed(operationID string, err error) {
 	s.jobMu.Lock()
 	defer s.jobMu.Unlock()
@@ -550,32 +540,45 @@ func (s *Service) setJobFailed(operationID string, err error) {
 	s.jobs[operationID] = job
 }
 
-func (s *Service) setJobSucceeded(operationID string, req CreateStockPoolRequest) {
+// setJobSucceeded marks one in-memory job as succeeded.
+func (s *Service) setJobSucceeded(operationID string, req CreateStockUnitsRequest) {
 	s.jobMu.Lock()
 	defer s.jobMu.Unlock()
 
 	job := s.jobs[operationID]
 	job.Status = domain.OperatorJobSucceeded
-	job.ObjectName = req.Name
-	job.ObjectNamespace = req.Namespace
+	job.ObjectName = stockUnitBatchName(req.SpecName, req.OperationID)
+	job.ObjectNamespace = runtimev1alpha1.DefaultStockNamespace
 	job.UpdatedAt = time.Now().UTC()
 	s.jobs[operationID] = job
 }
 
-func generatedStockPoolName(specName, operationID string) string {
-	name := fmt.Sprintf("pool-%s-%s", normalizeName(specName), shortHash(operationID))
-	if len(name) <= 63 {
+// stockUnitBatchName creates the shared name prefix for all units seeded by one operation.
+func stockUnitBatchName(specName, operationID string) string {
+	name := fmt.Sprintf("stock-%s-%s", normalizeName(specName), shortHash(operationID))
+	if len(name) <= 59 {
 		return name
 	}
-	name = name[:63]
-	return strings.TrimRight(name, "-")
+	return strings.TrimRight(name[:59], "-")
 }
 
+// generatedStockUnitName creates a deterministic unit name within one stock batch.
+func generatedStockUnitName(specName, operationID string, ordinal int32) string {
+	suffix := fmt.Sprintf("-%03d", ordinal+1)
+	prefix := stockUnitBatchName(specName, operationID)
+	if len(prefix)+len(suffix) > 63 {
+		prefix = strings.TrimRight(prefix[:63-len(suffix)], "-")
+	}
+	return prefix + suffix
+}
+
+// shortHash returns a short stable digest used in object names.
 func shortHash(input string) string {
 	sum := sha256.Sum256([]byte(input))
 	return hex.EncodeToString(sum[:])[:10]
 }
 
+// normalizeName turns a spec name into a DNS-safe object-name fragment.
 func normalizeName(specName string) string {
 	name := strings.ToLower(strings.TrimSpace(specName))
 	name = strings.ReplaceAll(name, ".", "-")

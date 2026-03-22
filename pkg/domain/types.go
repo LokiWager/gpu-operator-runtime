@@ -1,16 +1,23 @@
 package domain
 
-import "time"
+import (
+	"time"
 
+	runtimev1alpha1 "github.com/loki/gpu-operator-runtime/api/v1alpha1"
+)
+
+// HealthStatus summarizes process and cluster health for the HTTP health endpoint.
 type HealthStatus struct {
 	StartedAt           time.Time `json:"startedAt"`
 	UptimeSeconds       int64     `json:"uptimeSeconds"`
 	KubernetesConnected bool      `json:"kubernetesConnected"`
 	NodeCount           int       `json:"nodeCount"`
 	KubeError           string    `json:"kubeError,omitempty"`
-	StockPoolCount      int       `json:"stockPoolCount"`
+	StockUnitCount      int       `json:"stockUnitCount"`
+	ActiveUnitCount     int       `json:"activeUnitCount"`
 }
 
+// OperatorJobStatus is the state of an asynchronous operator-side workflow.
 type OperatorJobStatus string
 
 const (
@@ -20,6 +27,7 @@ const (
 	OperatorJobFailed    OperatorJobStatus = "failed"
 )
 
+// OperatorJob describes one asynchronous stock seeding request.
 type OperatorJob struct {
 	ID              string            `json:"id"`
 	OperationID     string            `json:"operationID"`
@@ -32,20 +40,25 @@ type OperatorJob struct {
 	UpdatedAt       time.Time         `json:"updatedAt"`
 }
 
-type StockPoolRuntime struct {
-	Name               string    `json:"name"`
-	Namespace          string    `json:"namespace"`
-	SpecName           string    `json:"specName"`
-	Image              string    `json:"image,omitempty"`
-	Memory             string    `json:"memory,omitempty"`
-	GPU                int32     `json:"gpu,omitempty"`
-	DesiredReplicas    int32     `json:"desiredReplicas"`
-	AvailableReplicas  int32     `json:"availableReplicas"`
-	AllocatedReplicas  int32     `json:"allocatedReplicas"`
-	Phase              string    `json:"phase"`
-	ObservedGeneration int64     `json:"observedGeneration"`
-	LastSyncTime       time.Time `json:"lastSyncTime,omitempty"`
-	ServiceName        string    `json:"serviceName,omitempty"`
-	Reason             string    `json:"reason,omitempty"`
-	Message            string    `json:"message,omitempty"`
+// GPUUnitRuntime is the API-facing runtime view of a GPUUnit object.
+type GPUUnitRuntime struct {
+	Name                 string                          `json:"name"`
+	Namespace            string                          `json:"namespace"`
+	Lifecycle            string                          `json:"lifecycle"`
+	SpecName             string                          `json:"specName"`
+	SourceStockName      string                          `json:"sourceStockName,omitempty"`
+	SourceStockNamespace string                          `json:"sourceStockNamespace,omitempty"`
+	Image                string                          `json:"image,omitempty"`
+	Memory               string                          `json:"memory,omitempty"`
+	GPU                  int32                           `json:"gpu,omitempty"`
+	Template             runtimev1alpha1.GPUUnitTemplate `json:"template,omitempty"`
+	Access               runtimev1alpha1.GPUUnitAccess   `json:"access,omitempty"`
+	Phase                string                          `json:"phase"`
+	ReadyReplicas        int32                           `json:"readyReplicas"`
+	ObservedGeneration   int64                           `json:"observedGeneration"`
+	LastSyncTime         time.Time                       `json:"lastSyncTime,omitempty"`
+	ServiceName          string                          `json:"serviceName,omitempty"`
+	AccessURL            string                          `json:"accessURL,omitempty"`
+	Reason               string                          `json:"reason,omitempty"`
+	Message              string                          `json:"message,omitempty"`
 }

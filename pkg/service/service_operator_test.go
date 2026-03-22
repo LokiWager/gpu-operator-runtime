@@ -26,7 +26,7 @@ func newOperatorService(t *testing.T) (*Service, context.Context, context.Cancel
 
 	cl := fake.NewClientBuilder().
 		WithScheme(scheme).
-		WithStatusSubresource(&runtimev1alpha1.StockPool{}).
+		WithStatusSubresource(&runtimev1alpha1.GPUUnit{}).
 		Build()
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -38,27 +38,16 @@ func newOperatorService(t *testing.T) (*Service, context.Context, context.Cancel
 	return svc, ctx, cancel
 }
 
-func TestService_CreateStockPoolAsync(t *testing.T) {
+func TestService_CreateStockUnitsAsync(t *testing.T) {
 	svc, ctx, cancel := newOperatorService(t)
 	defer cancel()
 
-	job, accepted, err := svc.CreateStockPoolAsync(ctx, CreateStockPoolRequest{
+	job, accepted, err := svc.CreateStockUnitsAsync(ctx, CreateStockUnitsRequest{
 		OperationID: "op-create-1",
-		Name:        "pool-g1",
-		Namespace:   "default",
 		SpecName:    "g1.1",
-		Image:       "nginx:1.27",
 		Memory:      "16Gi",
 		GPU:         1,
 		Replicas:    2,
-		Template: runtimev1alpha1.StockPoolTemplate{
-			Command: []string{"python"},
-			Args:    []string{"-m", "http.server", "8080"},
-			Ports: []runtimev1alpha1.StockPoolPortSpec{{
-				Name: "http",
-				Port: 8080,
-			}},
-		},
 	})
 	if err != nil {
 		t.Fatalf("create async job error: %v", err)
@@ -72,34 +61,37 @@ func TestService_CreateStockPoolAsync(t *testing.T) {
 
 	waitForJobStatus(t, ctx, svc, job.ID, domain.OperatorJobSucceeded)
 
-	var pool runtimev1alpha1.StockPool
-	if err := svc.operator.Get(ctx, types.NamespacedName{Name: "pool-g1", Namespace: "default"}, &pool); err != nil {
-		t.Fatalf("get stockpool error: %v", err)
-	}
-	if pool.Spec.Replicas != 2 {
-		t.Fatalf("expected replicas=2, got %d", pool.Spec.Replicas)
-	}
-	if pool.Spec.Template.Command[0] != "python" {
-		t.Fatalf("expected runtime command to be stored")
-	}
-	if got := pool.GetAnnotations()[runtimev1alpha1.AnnotationOperationID]; got != "op-create-1" {
-		t.Fatalf("expected operation annotation, got %q", got)
+	for _, name := range []string{
+		generatedStockUnitName("g1.1", "op-create-1", 0),
+		generatedStockUnitName("g1.1", "op-create-1", 1),
+	} {
+		var unit runtimev1alpha1.GPUUnit
+		if err := svc.operator.Get(ctx, types.NamespacedName{Name: name, Namespace: runtimev1alpha1.DefaultStockNamespace}, &unit); err != nil {
+			t.Fatalf("get stock unit error: %v", err)
+		}
+		if unit.Spec.Image != runtimev1alpha1.StockReservationImage {
+			t.Fatalf("expected stock image %s, got %s", runtimev1alpha1.StockReservationImage, unit.Spec.Image)
+		}
+		if len(unit.Spec.Template.Command) != 0 || len(unit.Spec.Template.Ports) != 0 {
+			t.Fatalf("expected stock template to stay empty, got %+v", unit.Spec.Template)
+		}
+		if got := unit.GetAnnotations()[runtimev1alpha1.AnnotationOperationID]; got != "op-create-1" {
+			t.Fatalf("expected operation annotation, got %q", got)
+		}
 	}
 }
 
-func TestService_CreateStockPoolAsync_IsIdempotent(t *testing.T) {
+func TestService_CreateStockUnitsAsync_IsIdempotent(t *testing.T) {
 	svc, ctx, cancel := newOperatorService(t)
 	defer cancel()
 
-	req := CreateStockPoolRequest{
+	req := CreateStockUnitsRequest{
 		OperationID: "op-same-1",
-		Name:        "pool-g1",
-		Namespace:   "default",
 		SpecName:    "g1.1",
 		Replicas:    1,
 	}
 
-	job1, accepted, err := svc.CreateStockPoolAsync(ctx, req)
+	job1, accepted, err := svc.CreateStockUnitsAsync(ctx, req)
 	if err != nil {
 		t.Fatalf("first create error: %v", err)
 	}
@@ -107,7 +99,7 @@ func TestService_CreateStockPoolAsync_IsIdempotent(t *testing.T) {
 		t.Fatalf("expected first create to be accepted")
 	}
 
-	job2, accepted, err := svc.CreateStockPoolAsync(ctx, req)
+	job2, accepted, err := svc.CreateStockUnitsAsync(ctx, req)
 	if err != nil {
 		t.Fatalf("second create error: %v", err)
 	}
@@ -119,26 +111,22 @@ func TestService_CreateStockPoolAsync_IsIdempotent(t *testing.T) {
 	}
 }
 
-func TestService_CreateStockPoolAsync_RejectsOperationConflict(t *testing.T) {
+func TestService_CreateStockUnitsAsync_RejectsOperationConflict(t *testing.T) {
 	svc, ctx, cancel := newOperatorService(t)
 	defer cancel()
 
-	req := CreateStockPoolRequest{
+	req := CreateStockUnitsRequest{
 		OperationID: "op-conflict-1",
-		Name:        "pool-g1",
-		Namespace:   "default",
 		SpecName:    "g1.1",
 		Replicas:    1,
 	}
 
-	if _, _, err := svc.CreateStockPoolAsync(ctx, req); err != nil {
+	if _, _, err := svc.CreateStockUnitsAsync(ctx, req); err != nil {
 		t.Fatalf("first create error: %v", err)
 	}
 
-	_, _, err := svc.CreateStockPoolAsync(ctx, CreateStockPoolRequest{
+	_, _, err := svc.CreateStockUnitsAsync(ctx, CreateStockUnitsRequest{
 		OperationID: "op-conflict-1",
-		Name:        "pool-g1",
-		Namespace:   "default",
 		SpecName:    "g2.1",
 		Replicas:    1,
 	})
@@ -152,19 +140,15 @@ func TestService_CreateStockPoolAsync_RejectsOperationConflict(t *testing.T) {
 	}
 }
 
-func TestService_CreateStockPoolAsync_ValidatesTemplate(t *testing.T) {
+func TestService_CreateStockUnitsAsync_ValidatesMemory(t *testing.T) {
 	svc, ctx, cancel := newOperatorService(t)
 	defer cancel()
 
-	_, _, err := svc.CreateStockPoolAsync(ctx, CreateStockPoolRequest{
-		OperationID: "op-invalid-template",
-		Name:        "pool-g1",
-		Namespace:   "default",
+	_, _, err := svc.CreateStockUnitsAsync(ctx, CreateStockUnitsRequest{
+		OperationID: "op-invalid-memory",
 		SpecName:    "g1.1",
 		Replicas:    1,
-		Template: runtimev1alpha1.StockPoolTemplate{
-			Ports: []runtimev1alpha1.StockPoolPortSpec{{Name: "http", Port: 70000}},
-		},
+		Memory:      "not-a-quantity",
 	})
 	if err == nil {
 		t.Fatalf("expected validation error")

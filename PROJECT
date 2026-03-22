@@ -15,7 +15,7 @@ resources:
   controller: true
   domain: lokiwager.io
   group: runtime
-  kind: StockPool
+  kind: GPUUnit
   path: github.com/loki/gpu-operator-runtime/api/v1alpha1
   version: v1alpha1
 version: "3"

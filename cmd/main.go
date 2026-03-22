@@ -47,6 +47,8 @@ func init() {
 	utilruntime.Must(runtimev1alpha1.AddToScheme(scheme))
 }
 
+// main starts the shared manager, HTTP API, background jobs, and health endpoints.
+//
 // nolint:gocyclo
 func main() {
 	var metricsAddr string
@@ -105,11 +107,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := (&controller.StockPoolReconciler{
+	if err := (&controller.GPUUnitReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "Failed to create controller", "controller", "StockPool")
+		setupLog.Error(err, "Failed to create controller", "controller", "GPUUnit")
 		os.Exit(1)
 	}
 
@@ -169,6 +171,7 @@ func main() {
 	}
 }
 
+// resolveRESTConfig loads either the explicit kubeconfig or the ambient cluster config.
 func resolveRESTConfig(kubeconfig string) (*rest.Config, error) {
 	if kubeconfig == "" {
 		return ctrl.GetConfig()
@@ -176,18 +179,22 @@ func resolveRESTConfig(kubeconfig string) (*rest.Config, error) {
 	return clientcmd.BuildConfigFromFlags("", kubeconfig)
 }
 
+// nonLeaderRunnable adapts plain functions into manager runnables that never require leadership.
 type nonLeaderRunnable struct {
 	run func(context.Context) error
 }
 
+// Start executes the wrapped runnable function.
 func (r nonLeaderRunnable) Start(ctx context.Context) error {
 	return r.run(ctx)
 }
 
+// NeedLeaderElection reports that this runnable may run on every replica.
 func (r nonLeaderRunnable) NeedLeaderElection() bool {
 	return false
 }
 
+// startHTTPServer serves the Echo handler and shuts it down gracefully when the manager stops.
 func startHTTPServer(ctx context.Context, srv *http.Server) error {
 	errCh := make(chan error, 1)
 	go func() {

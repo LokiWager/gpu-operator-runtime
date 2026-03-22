@@ -14,22 +14,26 @@ import (
 	"github.com/loki/gpu-operator-runtime/pkg/service"
 )
 
+// Server owns the Echo HTTP surface for the runtime control plane.
 type Server struct {
 	service *service.Service
 	logger  *slog.Logger
 	echo    *echo.Echo
 }
 
+// APIError is the stable error payload returned by the HTTP API.
 type APIError struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
 }
 
+// envelope keeps success and error responses under one JSON shape.
 type envelope struct {
 	Data  any       `json:"data,omitempty"`
 	Error *APIError `json:"error,omitempty"`
 }
 
+// NewServer wires the runtime service into a ready-to-run Echo instance.
 func NewServer(svc *service.Service, logger *slog.Logger) *echo.Echo {
 	e := echo.New()
 	e.HideBanner = true
@@ -44,59 +48,161 @@ func NewServer(svc *service.Service, logger *slog.Logger) *echo.Echo {
 	return e
 }
 
+// routes registers middleware and all HTTP endpoints.
 func (s *Server) routes() {
 	s.echo.Use(middleware.Recover())
 	s.echo.Use(s.loggingMiddleware)
 
 	s.echo.GET("/swagger/*", echoSwagger.WrapHandler)
 	s.echo.GET("/api/v1/health", s.handleHealth)
-	s.echo.GET("/api/v1/operator/stockpools", s.handleListStockPools)
-	s.echo.POST("/api/v1/operator/stockpools", s.handleCreateStockPool)
+	s.echo.GET("/api/v1/gpu-units", s.handleListGPUUnits)
+	s.echo.POST("/api/v1/gpu-units", s.handleCreateGPUUnit)
+	s.echo.GET("/api/v1/gpu-units/:name", s.handleGetGPUUnit)
+	s.echo.PUT("/api/v1/gpu-units/:name", s.handleUpdateGPUUnit)
+	s.echo.DELETE("/api/v1/gpu-units/:name", s.handleDeleteGPUUnit)
+	s.echo.POST("/api/v1/operator/stock-units", s.handleCreateStockUnits)
 	s.echo.GET("/api/v1/operator/jobs/:operationID", s.handleOperatorJobByID)
 }
 
-// handleListStockPools godoc
-// @Summary List stock pools
-// @Description List StockPool custom resources and their observed runtime state.
-// @Tags operator
+// handleListGPUUnits godoc
+// @Summary List GPU units
+// @Description List active GPU unit resources that were created by consuming stock units.
+// @Tags runtime
 // @Produce json
 // @Param namespace query string false "Namespace filter"
-// @Success 200 {object} StockPoolListResponse
+// @Success 200 {object} GPUUnitListResponse
+// @Failure 400 {object} ErrorResponse
 // @Failure 503 {object} ErrorResponse
 // @Failure 500 {object} ErrorResponse
-// @Router /operator/stockpools [get]
-func (s *Server) handleListStockPools(c echo.Context) error {
+// @Router /gpu-units [get]
+func (s *Server) handleListGPUUnits(c echo.Context) error {
 	namespace := c.QueryParam("namespace")
-	items, err := s.service.ListStockPools(c.Request().Context(), namespace)
+	items, err := s.service.ListGPUUnits(c.Request().Context(), namespace)
 	if err != nil {
-		return writeServiceError(c, err, "list_stockpools_failed")
+		return writeServiceError(c, err, "list_gpuunits_failed")
 	}
 	return writeData(c, http.StatusOK, items)
 }
 
-// handleCreateStockPool godoc
-// @Summary Create a stock pool operation
-// @Description Submit a StockPool creation request. Replays with the same operationID and payload are idempotent.
+// handleCreateGPUUnit godoc
+// @Summary Create a GPU unit
+// @Description Consume one ready stock unit, keep its reserved resource envelope, and persist an active GPUUnit with the caller's runtime image, template, and access settings. Replays with the same operationID and payload are idempotent.
+// @Tags runtime
+// @Accept json
+// @Produce json
+// @Param request body service.CreateGPUUnitRequest true "Create GPU unit request"
+// @Success 200 {object} GPUUnitResponse
+// @Success 201 {object} GPUUnitResponse
+// @Failure 400 {object} ErrorResponse
+// @Failure 409 {object} ErrorResponse
+// @Failure 503 {object} ErrorResponse
+// @Failure 500 {object} ErrorResponse
+// @Router /gpu-units [post]
+func (s *Server) handleCreateGPUUnit(c echo.Context) error {
+	var req service.CreateGPUUnitRequest
+	if err := c.Bind(&req); err != nil {
+		return writeError(c, http.StatusBadRequest, "invalid_request", err.Error())
+	}
+
+	instance, created, err := s.service.CreateGPUUnit(c.Request().Context(), req)
+	if err != nil {
+		return writeServiceError(c, err, "create_gpuunit_failed")
+	}
+	if created {
+		return writeData(c, http.StatusCreated, instance)
+	}
+	return writeData(c, http.StatusOK, instance)
+}
+
+// handleGetGPUUnit godoc
+// @Summary Get a GPU unit
+// @Description Get the current desired and observed state of one active GPU unit.
+// @Tags runtime
+// @Produce json
+// @Param name path string true "GPU unit name"
+// @Param namespace query string false "Namespace filter"
+// @Success 200 {object} GPUUnitResponse
+// @Failure 400 {object} ErrorResponse
+// @Failure 404 {object} ErrorResponse
+// @Failure 500 {object} ErrorResponse
+// @Router /gpu-units/{name} [get]
+func (s *Server) handleGetGPUUnit(c echo.Context) error {
+	instance, err := s.service.GetGPUUnit(c.Request().Context(), c.QueryParam("namespace"), c.Param("name"))
+	if err != nil {
+		return writeServiceError(c, err, "gpuunit_not_found")
+	}
+	return writeData(c, http.StatusOK, instance)
+}
+
+// handleUpdateGPUUnit godoc
+// @Summary Update a GPU unit
+// @Description Update the mutable runtime contract of an active GPU unit, including image, template, and access settings.
+// @Tags runtime
+// @Accept json
+// @Produce json
+// @Param name path string true "GPU unit name"
+// @Param namespace query string false "Namespace filter"
+// @Param request body service.UpdateGPUUnitRequest true "Update GPU unit request"
+// @Success 200 {object} GPUUnitResponse
+// @Failure 400 {object} ErrorResponse
+// @Failure 404 {object} ErrorResponse
+// @Failure 500 {object} ErrorResponse
+// @Router /gpu-units/{name} [put]
+func (s *Server) handleUpdateGPUUnit(c echo.Context) error {
+	var req service.UpdateGPUUnitRequest
+	if err := c.Bind(&req); err != nil {
+		return writeError(c, http.StatusBadRequest, "invalid_request", err.Error())
+	}
+
+	instance, err := s.service.UpdateGPUUnit(c.Request().Context(), c.QueryParam("namespace"), c.Param("name"), req)
+	if err != nil {
+		return writeServiceError(c, err, "update_gpuunit_failed")
+	}
+	return writeData(c, http.StatusOK, instance)
+}
+
+// handleDeleteGPUUnit godoc
+// @Summary Delete a GPU unit
+// @Description Delete an active GPU unit resource and let Kubernetes garbage collection clean up the owned runtime objects.
+// @Tags runtime
+// @Produce json
+// @Param name path string true "GPU unit name"
+// @Param namespace query string false "Namespace filter"
+// @Success 204 {string} string ""
+// @Failure 400 {object} ErrorResponse
+// @Failure 404 {object} ErrorResponse
+// @Failure 500 {object} ErrorResponse
+// @Router /gpu-units/{name} [delete]
+func (s *Server) handleDeleteGPUUnit(c echo.Context) error {
+	if err := s.service.DeleteGPUUnit(c.Request().Context(), c.QueryParam("namespace"), c.Param("name")); err != nil {
+		return writeServiceError(c, err, "delete_gpuunit_failed")
+	}
+	return c.NoContent(http.StatusNoContent)
+}
+
+// handleCreateStockUnits godoc
+// @Summary Seed stock units
+// @Description Submit an operator request that creates stock GPUUnit objects in the stock namespace using the built-in reservation image. Replays with the same operationID and payload are idempotent.
 // @Tags operator
 // @Accept json
 // @Produce json
-// @Param request body service.CreateStockPoolRequest true "Create stock pool request"
+// @Param request body service.CreateStockUnitsRequest true "Create stock units request"
 // @Success 200 {object} OperatorJobResponse
 // @Success 202 {object} OperatorJobResponse
 // @Failure 400 {object} ErrorResponse
 // @Failure 409 {object} ErrorResponse
 // @Failure 503 {object} ErrorResponse
 // @Failure 500 {object} ErrorResponse
-// @Router /operator/stockpools [post]
-func (s *Server) handleCreateStockPool(c echo.Context) error {
-	var req service.CreateStockPoolRequest
+// @Router /operator/stock-units [post]
+func (s *Server) handleCreateStockUnits(c echo.Context) error {
+	var req service.CreateStockUnitsRequest
 	if err := c.Bind(&req); err != nil {
 		return writeError(c, http.StatusBadRequest, "invalid_request", err.Error())
 	}
 
-	job, accepted, err := s.service.CreateStockPoolAsync(c.Request().Context(), req)
+	job, accepted, err := s.service.CreateStockUnitsAsync(c.Request().Context(), req)
 	if err != nil {
-		return writeServiceError(c, err, "create_stockpool_job_failed")
+		return writeServiceError(c, err, "create_stock_units_job_failed")
 	}
 	if accepted {
 		return writeData(c, http.StatusAccepted, job)
@@ -106,7 +212,7 @@ func (s *Server) handleCreateStockPool(c echo.Context) error {
 
 // handleOperatorJobByID godoc
 // @Summary Get operation status
-// @Description Get the current state of an asynchronous stock pool creation operation.
+// @Description Get the current state of an asynchronous stock seeding operation.
 // @Tags operator
 // @Produce json
 // @Param operationID path string true "Operation ID"
@@ -144,6 +250,7 @@ func (s *Server) handleHealth(c echo.Context) error {
 	return writeData(c, http.StatusOK, health)
 }
 
+// loggingMiddleware records one structured log line per HTTP request.
 func (s *Server) loggingMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		start := time.Now()
@@ -159,14 +266,17 @@ func (s *Server) loggingMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 	}
 }
 
+// writeData renders a successful response envelope.
 func writeData(c echo.Context, status int, data any) error {
 	return c.JSON(status, envelope{Data: data})
 }
 
+// writeError renders an error response envelope with a stable API code.
 func writeError(c echo.Context, status int, code, message string) error {
 	return c.JSON(status, envelope{Error: &APIError{Code: code, Message: message}})
 }
 
+// writeServiceError maps service-layer errors to HTTP status codes and API codes.
 func writeServiceError(c echo.Context, err error, fallbackCode string) error {
 	var validationErr *service.ValidationError
 	if errors.As(err, &validationErr) {
@@ -176,6 +286,11 @@ func writeServiceError(c echo.Context, err error, fallbackCode string) error {
 	var conflictErr *service.ConflictError
 	if errors.As(err, &conflictErr) {
 		return writeError(c, http.StatusConflict, "operation_conflict", conflictErr.Error())
+	}
+
+	var capacityErr *service.CapacityError
+	if errors.As(err, &capacityErr) {
+		return writeError(c, http.StatusConflict, "insufficient_capacity", capacityErr.Error())
 	}
 
 	var notFoundErr *service.NotFoundError

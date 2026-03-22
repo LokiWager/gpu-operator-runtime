@@ -1,16 +1,19 @@
 apiVersion: runtime.lokiwager.io/v1alpha1
-kind: StockPool
+kind: GPUUnit
 metadata:
   labels:
     app.kubernetes.io/name: gpu-operator-runtime
     app.kubernetes.io/managed-by: kustomize
-  name: stockpool-sample
+  name: stock-g1-001
+  namespace: runtime-stock
 spec:
   specName: g1.1
-  image: python:3.12-slim
-  memory: 8Gi
+  image: python:3.12
+  memory: 16Gi
   gpu: 1
-  replicas: 1
+  access:
+    primaryPort: http
+    scheme: http
   template:
     command:
       - python
@@ -20,8 +23,7 @@ spec:
       - "8080"
     envs:
       - name: MODEL_ID
-        value: sample
+        value: sd-webui
     ports:
       - name: http
         port: 8080
-        protocol: TCP

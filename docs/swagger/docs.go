@@ -21,6 +21,281 @@ const docTemplate = `{
     "host": "{{.Host}}",
     "basePath": "{{.BasePath}}",
     "paths": {
+        "/gpu-units": {
+            "get": {
+                "description": "List active GPU unit resources that were created by consuming stock units.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "runtime"
+                ],
+                "summary": "List GPU units",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Namespace filter",
+                        "name": "namespace",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.GPUUnitListResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "description": "Consume one ready stock unit, keep its reserved resource envelope, and persist an active GPUUnit with the caller's runtime image, template, and access settings. Replays with the same operationID and payload are idempotent.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "runtime"
+                ],
+                "summary": "Create a GPU unit",
+                "parameters": [
+                    {
+                        "description": "Create GPU unit request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/service.CreateGPUUnitRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.GPUUnitResponse"
+                        }
+                    },
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/api.GPUUnitResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/gpu-units/{name}": {
+            "get": {
+                "description": "Get the current desired and observed state of one active GPU unit.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "runtime"
+                ],
+                "summary": "Get a GPU unit",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "GPU unit name",
+                        "name": "name",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Namespace filter",
+                        "name": "namespace",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.GPUUnitResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            },
+            "put": {
+                "description": "Update the mutable runtime contract of an active GPU unit, including image, template, and access settings.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "runtime"
+                ],
+                "summary": "Update a GPU unit",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "GPU unit name",
+                        "name": "name",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Namespace filter",
+                        "name": "namespace",
+                        "in": "query"
+                    },
+                    {
+                        "description": "Update GPU unit request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/service.UpdateGPUUnitRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.GPUUnitResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "description": "Delete an active GPU unit resource and let Kubernetes garbage collection clean up the owned runtime objects.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "runtime"
+                ],
+                "summary": "Delete a GPU unit",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "GPU unit name",
+                        "name": "name",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Namespace filter",
+                        "name": "namespace",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/health": {
             "get": {
                 "description": "Return process and Kubernetes connectivity health for the runtime server.",
@@ -49,7 +324,7 @@ const docTemplate = `{
         },
         "/operator/jobs/{operationID}": {
             "get": {
-                "description": "Get the current state of an asynchronous stock pool creation operation.",
+                "description": "Get the current state of an asynchronous stock seeding operation.",
                 "produces": [
                     "application/json"
                 ],
@@ -94,47 +369,9 @@ const docTemplate = `{
                 }
             }
         },
-        "/operator/stockpools": {
-            "get": {
-                "description": "List StockPool custom resources and their observed runtime state.",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "operator"
-                ],
-                "summary": "List stock pools",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Namespace filter",
-                        "name": "namespace",
-                        "in": "query"
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/api.StockPoolListResponse"
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "$ref": "#/definitions/api.ErrorResponse"
-                        }
-                    },
-                    "503": {
-                        "description": "Service Unavailable",
-                        "schema": {
-                            "$ref": "#/definitions/api.ErrorResponse"
-                        }
-                    }
-                }
-            },
+        "/operator/stock-units": {
             "post": {
-                "description": "Submit a StockPool creation request. Replays with the same operationID and payload are idempotent.",
+                "description": "Submit an operator request that creates stock GPUUnit objects in the stock namespace using the built-in reservation image. Replays with the same operationID and payload are idempotent.",
                 "consumes": [
                     "application/json"
                 ],
@@ -144,15 +381,15 @@ const docTemplate = `{
                 "tags": [
                     "operator"
                 ],
-                "summary": "Create a stock pool operation",
+                "summary": "Seed stock units",
                 "parameters": [
                     {
-                        "description": "Create stock pool request",
+                        "description": "Create stock units request",
                         "name": "request",
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/service.CreateStockPoolRequest"
+                            "$ref": "#/definitions/service.CreateStockUnitsRequest"
                         }
                     }
                 ],
@@ -217,6 +454,25 @@ const docTemplate = `{
                 }
             }
         },
+        "api.GPUUnitListResponse": {
+            "type": "object",
+            "properties": {
+                "data": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/domain.GPUUnitRuntime"
+                    }
+                }
+            }
+        },
+        "api.GPUUnitResponse": {
+            "type": "object",
+            "properties": {
+                "data": {
+                    "$ref": "#/definitions/domain.GPUUnitRuntime"
+                }
+            }
+        },
         "api.HealthResponse": {
             "type": "object",
             "properties": {
@@ -233,20 +489,74 @@ const docTemplate = `{
                 }
             }
         },
-        "api.StockPoolListResponse": {
+        "domain.GPUUnitRuntime": {
             "type": "object",
             "properties": {
-                "data": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/domain.StockPoolRuntime"
-                    }
+                "access": {
+                    "$ref": "#/definitions/v1alpha1.GPUUnitAccess"
+                },
+                "accessURL": {
+                    "type": "string"
+                },
+                "gpu": {
+                    "type": "integer"
+                },
+                "image": {
+                    "type": "string"
+                },
+                "lastSyncTime": {
+                    "type": "string"
+                },
+                "lifecycle": {
+                    "type": "string"
+                },
+                "memory": {
+                    "type": "string"
+                },
+                "message": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "namespace": {
+                    "type": "string"
+                },
+                "observedGeneration": {
+                    "type": "integer"
+                },
+                "phase": {
+                    "type": "string"
+                },
+                "readyReplicas": {
+                    "type": "integer"
+                },
+                "reason": {
+                    "type": "string"
+                },
+                "serviceName": {
+                    "type": "string"
+                },
+                "sourceStockName": {
+                    "type": "string"
+                },
+                "sourceStockNamespace": {
+                    "type": "string"
+                },
+                "specName": {
+                    "type": "string"
+                },
+                "template": {
+                    "$ref": "#/definitions/v1alpha1.GPUUnitTemplate"
                 }
             }
         },
         "domain.HealthStatus": {
             "type": "object",
             "properties": {
+                "activeUnitCount": {
+                    "type": "integer"
+                },
                 "kubeError": {
                     "type": "string"
                 },
@@ -259,7 +569,7 @@ const docTemplate = `{
                 "startedAt": {
                     "type": "string"
                 },
-                "stockPoolCount": {
+                "stockUnitCount": {
                     "type": "integer"
                 },
                 "uptimeSeconds": {
@@ -314,66 +624,13 @@ const docTemplate = `{
                 "OperatorJobFailed"
             ]
         },
-        "domain.StockPoolRuntime": {
+        "service.CreateGPUUnitRequest": {
             "type": "object",
             "properties": {
-                "allocatedReplicas": {
-                    "type": "integer"
-                },
-                "availableReplicas": {
-                    "type": "integer"
-                },
-                "desiredReplicas": {
-                    "type": "integer"
-                },
-                "gpu": {
-                    "type": "integer"
+                "access": {
+                    "$ref": "#/definitions/v1alpha1.GPUUnitAccess"
                 },
                 "image": {
-                    "type": "string"
-                },
-                "lastSyncTime": {
-                    "type": "string"
-                },
-                "memory": {
-                    "type": "string"
-                },
-                "message": {
-                    "type": "string"
-                },
-                "name": {
-                    "type": "string"
-                },
-                "namespace": {
-                    "type": "string"
-                },
-                "observedGeneration": {
-                    "type": "integer"
-                },
-                "phase": {
-                    "type": "string"
-                },
-                "reason": {
-                    "type": "string"
-                },
-                "serviceName": {
-                    "type": "string"
-                },
-                "specName": {
-                    "type": "string"
-                }
-            }
-        },
-        "service.CreateStockPoolRequest": {
-            "type": "object",
-            "properties": {
-                "gpu": {
-                    "type": "integer"
-                },
-                "image": {
-                    "type": "string"
-                },
-                "memory": {
                     "type": "string"
                 },
                 "name": {
@@ -385,14 +642,48 @@ const docTemplate = `{
                 "operationID": {
                     "type": "string"
                 },
+                "specName": {
+                    "type": "string"
+                },
+                "stockNamespace": {
+                    "type": "string"
+                },
+                "template": {
+                    "$ref": "#/definitions/v1alpha1.GPUUnitTemplate"
+                }
+            }
+        },
+        "service.CreateStockUnitsRequest": {
+            "type": "object",
+            "properties": {
+                "gpu": {
+                    "type": "integer"
+                },
+                "memory": {
+                    "type": "string"
+                },
+                "operationID": {
+                    "type": "string"
+                },
                 "replicas": {
                     "type": "integer"
                 },
                 "specName": {
                     "type": "string"
+                }
+            }
+        },
+        "service.UpdateGPUUnitRequest": {
+            "type": "object",
+            "properties": {
+                "access": {
+                    "$ref": "#/definitions/v1alpha1.GPUUnitAccess"
+                },
+                "image": {
+                    "type": "string"
                 },
                 "template": {
-                    "$ref": "#/definitions/v1alpha1.StockPoolTemplate"
+                    "$ref": "#/definitions/v1alpha1.GPUUnitTemplate"
                 }
             }
         },
@@ -409,7 +700,18 @@ const docTemplate = `{
                 "ProtocolSCTP"
             ]
         },
-        "v1alpha1.StockPoolEnvVar": {
+        "v1alpha1.GPUUnitAccess": {
+            "type": "object",
+            "properties": {
+                "primaryPort": {
+                    "type": "string"
+                },
+                "scheme": {
+                    "type": "string"
+                }
+            }
+        },
+        "v1alpha1.GPUUnitEnvVar": {
             "type": "object",
             "properties": {
                 "name": {
@@ -420,7 +722,7 @@ const docTemplate = `{
                 }
             }
         },
-        "v1alpha1.StockPoolPortSpec": {
+        "v1alpha1.GPUUnitPortSpec": {
             "type": "object",
             "properties": {
                 "name": {
@@ -435,7 +737,7 @@ const docTemplate = `{
                 }
             }
         },
-        "v1alpha1.StockPoolTemplate": {
+        "v1alpha1.GPUUnitTemplate": {
             "type": "object",
             "properties": {
                 "args": {
@@ -453,13 +755,13 @@ const docTemplate = `{
                 "envs": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/v1alpha1.StockPoolEnvVar"
+                        "$ref": "#/definitions/v1alpha1.GPUUnitEnvVar"
                     }
                 },
                 "ports": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/v1alpha1.StockPoolPortSpec"
+                        "$ref": "#/definitions/v1alpha1.GPUUnitPortSpec"
                     }
                 }
             }
