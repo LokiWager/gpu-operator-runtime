@@ -2,18 +2,16 @@
 
 Teaching-oriented Golang + Kubernetes project for building a GPU runtime control plane.
 
-The current chapter keeps the model deliberately small:
+The current chapter introduces the first persistent storage layer:
 
-- one custom resource: `GPUUnit`
-- one reconciler: `GPUUnitReconciler`
-- one runtime spec shared by stock units and active units
-- one stock namespace: `runtime-stock`
-- one active namespace: `runtime-instance`
+- `GPUUnit` still owns runtime lifecycle
+- `GPUStorage` now owns PVC lifecycle
+- `GPUStorage` defaults to an RBD-backed workspace volume (`rook-ceph-block`)
+- stock still lives in `runtime-stock`
+- active runtime and storage live in `runtime-instance`
+- deleting a runtime no longer implies deleting its data
 
-The operator API seeds stock units into `runtime-stock`. The runtime API consumes one ready stock unit and creates an active `GPUUnit` in `runtime-instance`. The controller reconciles both shapes with the same logic and only changes exposure behavior by namespace:
-
-- stock units reconcile a `Deployment`, but no `Service`
-- active units reconcile both `Deployment` and `Service`
+The operator API seeds stock units into `runtime-stock`. The runtime API consumes one ready stock unit and creates an active `GPUUnit`. The storage API creates RBD-backed `GPUStorage` objects, and active units mount them explicitly through `storageMounts`.
 
 ## Prerequisites
 
@@ -44,6 +42,29 @@ kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.a
 
 If the value is empty, a request like `"gpu": 1` will stay pending. For API and controller development on a non-GPU cluster, use `gpu: 0`.
 
+## Storage prerequisite
+
+`GPUStorage` reconciles into a Kubernetes `PersistentVolumeClaim`.
+
+This chapter assumes the default workspace volume is backed by Ceph RBD through the `rook-ceph-block` `StorageClass`.
+
+That means the cluster should either:
+
+- expose `rook-ceph-block`
+- or you must pass a different RBD-compatible `storageClassName` explicitly when creating storage
+
+You can verify the available storage classes with:
+
+```bash
+kubectl get storageclass
+```
+
+If you want to run this chapter against a real Ceph-backed storage layer, the two official starting
+points are:
+
+- Rook on Kubernetes: [Rook Ceph Quickstart](https://rook.io/docs/rook/latest/Getting-Started/quickstart/)
+- Ceph installation overview: [Ceph Installing Ceph](https://docs.ceph.com/en/latest/install/)
+
 ## Run locally
 
 ```bash
@@ -65,7 +86,7 @@ Swagger UI is served at:
 http://127.0.0.1:8080/swagger/index.html
 ```
 
-## Install the CRD
+## Install the CRDs
 
 Create the working namespaces first:
 
@@ -74,15 +95,17 @@ kubectl create namespace runtime-stock
 kubectl create namespace runtime-instance
 ```
 
-Install the CRD:
+Install the CRDs:
 
 ```bash
 kubectl apply -f config/crd/bases/runtime.lokiwager.io_gpuunits.yaml
+kubectl apply -f config/crd/bases/runtime.lokiwager.io_gpustorages.yaml
 ```
 
-If you want a direct manifest example instead of using the API first:
+If you want direct manifest examples instead of using the API first:
 
 ```bash
+kubectl apply -f config/samples/runtime_v1alpha1_gpustorage.yaml
 kubectl apply -f config/samples/runtime_v1alpha1_gpuunit.yaml
 ```
 
@@ -96,19 +119,9 @@ curl -s -X POST http://127.0.0.1:8080/api/v1/operator/stock-units \
   -d '{
     "operationID":"stock-g1-demo-001",
     "specName":"g1.1",
-    "image":"python:3.12",
     "memory":"16Gi",
     "gpu":1,
-    "replicas":2,
-    "access":{
-      "primaryPort":"http",
-      "scheme":"http"
-    },
-    "template":{
-      "command":["python"],
-      "args":["-m","http.server","8080"],
-      "ports":[{"name":"http","port":8080}]
-    }
+    "replicas":2
   }' | jq
 ```
 
@@ -125,7 +138,28 @@ kubectl get gpuunits -n runtime-stock
 kubectl get gpuunit -n runtime-stock
 ```
 
-### 2. Consume one ready stock unit into an active runtime
+### 2. Create persistent storage
+
+```bash
+curl -s -X POST http://127.0.0.1:8080/api/v1/gpu-storages \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "name":"model-cache",
+    "namespace":"runtime-instance",
+    "size":"20Gi",
+    "storageClassName":"rook-ceph-block"
+  }' | jq
+```
+
+Inspect storage:
+
+```bash
+curl -s 'http://127.0.0.1:8080/api/v1/gpu-storages/model-cache?namespace=runtime-instance' | jq
+kubectl get gpustorages -n runtime-instance
+kubectl get pvc -n runtime-instance
+```
+
+### 3. Consume one ready stock unit into an active runtime
 
 ```bash
 curl -s -X POST http://127.0.0.1:8080/api/v1/gpu-units \
@@ -134,53 +168,86 @@ curl -s -X POST http://127.0.0.1:8080/api/v1/gpu-units \
     "operationID":"unit-demo-001",
     "name":"demo-instance",
     "namespace":"runtime-instance",
-    "specName":"g1.1"
+    "specName":"g1.1",
+    "image":"python:3.12",
+    "access":{
+      "primaryPort":"http",
+      "scheme":"http"
+    },
+    "template":{
+      "command":["python"],
+      "args":["-m","http.server","8080"],
+      "ports":[{"name":"http","port":8080}]
+    },
+    "storageMounts":[
+      {
+        "name":"model-cache",
+        "mountPath":"/workspace/cache"
+      }
+    ]
   }' | jq
 ```
 
-The create request is intentionally narrow. It does not accept image, memory, GPU, template, or access overrides. Those fields come from the consumed stock unit.
-
-### 3. Inspect the active runtime
+### 4. Inspect the active runtime
 
 ```bash
 kubectl get gpuunits -n runtime-instance
 kubectl get gpuunit demo-instance -n runtime-instance -o yaml
-kubectl get deploy,svc,pod -n runtime-instance | grep demo-instance
+kubectl get deploy,svc,pod,pvc -n runtime-instance | grep demo-instance
 ```
 
-### 4. Update the active runtime
+### 5. Update runtime or storage
+
+Resize storage:
+
+```bash
+curl -s -X PUT 'http://127.0.0.1:8080/api/v1/gpu-storages/model-cache?namespace=runtime-instance' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "size":"40Gi"
+  }' | jq
+```
+
+Move the mount path on the runtime:
 
 ```bash
 curl -s -X PUT 'http://127.0.0.1:8080/api/v1/gpu-units/demo-instance?namespace=runtime-instance' \
   -H 'Content-Type: application/json' \
   -d '{
-    "image":"pytorch:2.6",
-    "template":{
-      "command":["python"],
-      "args":["-m","http.server","7860"],
-      "ports":[{"name":"web","port":7860}]
-    },
-    "access":{
-      "primaryPort":"web",
-      "scheme":"http"
-    }
+    "storageMounts":[
+      {
+        "name":"model-cache",
+        "mountPath":"/workspace/data"
+      }
+    ]
   }' | jq
 ```
 
-### 5. Query and delete active units
+### 6. Deletion semantics
+
+Delete the runtime:
 
 ```bash
-curl -s 'http://127.0.0.1:8080/api/v1/gpu-units?namespace=runtime-instance' | jq
-curl -s 'http://127.0.0.1:8080/api/v1/gpu-units/demo-instance?namespace=runtime-instance' | jq
 curl -i -X DELETE 'http://127.0.0.1:8080/api/v1/gpu-units/demo-instance?namespace=runtime-instance'
+```
+
+The storage object and PVC stay behind.
+
+Delete the storage after it is no longer mounted:
+
+```bash
+curl -i -X DELETE 'http://127.0.0.1:8080/api/v1/gpu-storages/model-cache?namespace=runtime-instance'
 ```
 
 ## Operational notes
 
-- Stock replenishment is explicit in this chapter. If you want more stock, call `POST /api/v1/operator/stock-units` again.
-- The controller derives stock versus active behavior from namespace placement, not from a second spec.
+- Stock replenishment is still explicit. If you want more stock, call `POST /api/v1/operator/stock-units` again.
 - Active runtime create is idempotent on `operationID`. Replaying the same request returns the same active unit instead of consuming stock twice.
-- A stock handoff is `claim -> delete stock -> create active -> restore stock on failure`. This matches the reality that warm GPU stock is already holding scarce capacity.
+- `GPUStorage` is a separate lifecycle object. Runtime deletion does not delete storage.
+- Storage deletion is blocked by the API while an active `GPUUnit` still references that storage.
+- `GPUUnit` mounts only reference storage by name and mount path. PVC naming, claim lifecycle, and status tracking stay controller-owned.
+- The current storage path is intentionally RBD-shaped: one active runtime owns one workspace volume. Shared filesystem use cases belong to a later CephFS-style path, not this chapter.
+- Reusing one `GPUStorage` from two active `GPUUnit` objects is rejected by the API with `409 Conflict`.
 
 ## Quality gates
 
@@ -191,6 +258,7 @@ make ci
 `make ci` runs:
 
 - CRD and RBAC generation
+- deepcopy generation
 - Swagger generation
 - formatting checks
 - `go vet`
@@ -200,10 +268,10 @@ make ci
 ## Project layout
 
 - `cmd/main.go`: manager, HTTP server, and async job worker in one process
-- `api/v1alpha1`: `GPUUnit` API schema
-- `internal/controller`: shared `GPUUnit` reconciler and workload helper logic
+- `api/v1alpha1`: `GPUUnit` and `GPUStorage` API schemas
+- `internal/controller`: runtime and storage reconcilers plus workload helper logic
 - `pkg/api`: Echo HTTP handlers and Swagger annotations
-- `pkg/service`: stock seeding, stock consumption, idempotency, and CRUD orchestration
+- `pkg/service`: stock seeding, stock consumption, storage CRUD, idempotency, and API orchestration
 - `pkg/jobs`: periodic status logging
 - `config/`: generated CRDs, RBAC, and sample manifests
 

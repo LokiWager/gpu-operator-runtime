@@ -30,12 +30,15 @@ const (
 	ReasonUnitReady                = "UnitReady"
 	ReasonUnitServiceSyncFailed    = "UnitServiceSyncFailed"
 	ReasonUnitDeploymentSyncFailed = "UnitDeploymentSyncFailed"
+	ReasonStorageMountInvalid      = "StorageMountInvalid"
+	ReasonStorageNotReady          = "StorageNotReady"
 	ReasonStockClaimed             = "StockClaimed"
 	ReasonStockConsumed            = "StockConsumed"
 
 	LabelAppNameKey   = "app.kubernetes.io/name"
 	LabelManagedByKey = "app.kubernetes.io/managed-by"
 	LabelUnitKey      = "runtime.lokiwager.io/unit"
+	LabelStorageKey   = "runtime.lokiwager.io/storage"
 
 	LabelAppNameValue   = "gpu-runtime-unit"
 	LabelManagedByValue = "gpu-runtime-operator"
@@ -45,11 +48,12 @@ const (
 	EnvGPUCount    = "GPU_COUNT"
 	EnvMemoryLimit = "MEMORY_LIMIT"
 
-	DefaultAccessScheme     = "http"
-	StatusMessageUnitReady  = "GPU unit runtime is ready."
-	StatusMessageUnitWait   = "Waiting for the GPU unit runtime to become ready."
-	StatusMessageStockReady = "Stock unit is ready to be consumed."
-	StatusMessageStockWait  = "Waiting for the stock unit runtime to become ready."
+	DefaultAccessScheme      = "http"
+	StatusMessageUnitReady   = "GPU unit runtime is ready."
+	StatusMessageUnitWait    = "Waiting for the GPU unit runtime to become ready."
+	StatusMessageUnitStorage = "Waiting for attached storage to become ready."
+	StatusMessageStockReady  = "Stock unit is ready to be consumed."
+	StatusMessageStockWait   = "Waiting for the stock unit runtime to become ready."
 
 	DefaultRuntimeImage        = "busybox:1.36"
 	StockReservationImage      = DefaultRuntimeImage
@@ -101,6 +105,13 @@ type GPUUnitAccess struct {
 	Scheme      string `json:"scheme,omitempty"`
 }
 
+// GPUUnitStorageMount declares one named storage attachment for the runtime container.
+type GPUUnitStorageMount struct {
+	Name      string `json:"name"`
+	MountPath string `json:"mountPath"`
+	ReadOnly  bool   `json:"readOnly,omitempty"`
+}
+
 // GPUUnitSpec defines the desired state of GPUUnit.
 type GPUUnitSpec struct {
 	// SpecName is the requested runtime flavor, for example "g1.1".
@@ -121,6 +132,9 @@ type GPUUnitSpec struct {
 
 	// Access describes the primary runtime endpoint.
 	Access GPUUnitAccess `json:"access,omitempty"`
+
+	// StorageMounts declares the persistent storage attachments mounted into the runtime.
+	StorageMounts []GPUUnitStorageMount `json:"storageMounts,omitempty"`
 }
 
 // GPUUnitStatus defines the observed state of GPUUnit.

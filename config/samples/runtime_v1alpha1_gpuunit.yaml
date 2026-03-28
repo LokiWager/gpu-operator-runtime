@@ -4,8 +4,8 @@ metadata:
   labels:
     app.kubernetes.io/name: gpu-operator-runtime
     app.kubernetes.io/managed-by: kustomize
-  name: stock-g1-001
-  namespace: runtime-stock
+  name: demo-instance
+  namespace: runtime-instance
 spec:
   specName: g1.1
   image: python:3.12
@@ -27,3 +27,6 @@ spec:
     ports:
       - name: http
         port: 8080
+  storageMounts:
+    - name: model-cache
+      mountPath: /workspace/cache

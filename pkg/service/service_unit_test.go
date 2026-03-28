@@ -204,6 +204,202 @@ func TestService_CreateGPUUnit_RequiresImage(t *testing.T) {
 	}
 }
 
+func TestService_CreateGPUUnit_RequiresReferencedStorageToExist(t *testing.T) {
+	svc, ctx, cancel := newOperatorService(t)
+	defer cancel()
+
+	seedStockUnit(t, ctx, svc, stockSeedOptions{
+		unitName:     "stock-g1-001",
+		specName:     "g1.1",
+		phase:        runtimev1alpha1.PhaseReady,
+		readyMessage: runtimev1alpha1.StatusMessageStockReady,
+	})
+
+	_, _, err := svc.CreateGPUUnit(ctx, CreateGPUUnitRequest{
+		OperationID: "gpu-create-storage-missing",
+		Name:        "demo-instance",
+		SpecName:    "g1.1",
+		Image:       "python:3.12",
+		StorageMounts: []runtimev1alpha1.GPUUnitStorageMount{{
+			Name:      "missing-storage",
+			MountPath: "/data",
+		}},
+	})
+	if err == nil {
+		t.Fatalf("expected missing storage error")
+	}
+
+	var notFoundErr *NotFoundError
+	if !errors.As(err, &notFoundErr) {
+		t.Fatalf("expected not found error, got %T", err)
+	}
+}
+
+func TestService_UpdateGPUUnit_StorageMounts(t *testing.T) {
+	svc, ctx, cancel := newOperatorService(t)
+	defer cancel()
+
+	seedStockUnit(t, ctx, svc, stockSeedOptions{
+		unitName:     "stock-g1-001",
+		specName:     "g1.1",
+		phase:        runtimev1alpha1.PhaseReady,
+		readyMessage: runtimev1alpha1.StatusMessageStockReady,
+	})
+	seedGPUStorage(t, ctx, svc, gpuStorageSeedOptions{
+		name:      "model-cache",
+		namespace: runtimev1alpha1.DefaultInstanceNamespace,
+		size:      "20Gi",
+		phase:     runtimev1alpha1.StoragePhaseReady,
+	})
+
+	_, _, err := svc.CreateGPUUnit(ctx, CreateGPUUnitRequest{
+		OperationID: "gpu-create-with-storage",
+		Name:        "demo-instance",
+		SpecName:    "g1.1",
+		Image:       "python:3.12",
+		StorageMounts: []runtimev1alpha1.GPUUnitStorageMount{{
+			Name:      "model-cache",
+			MountPath: "/data",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("create gpu unit error: %v", err)
+	}
+
+	updated, err := svc.UpdateGPUUnit(ctx, runtimev1alpha1.DefaultInstanceNamespace, "demo-instance", UpdateGPUUnitRequest{
+		StorageMounts: &[]runtimev1alpha1.GPUUnitStorageMount{{
+			Name:      "model-cache",
+			MountPath: "/workspace/cache",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("update gpu unit error: %v", err)
+	}
+	if len(updated.StorageMounts) != 1 || updated.StorageMounts[0].MountPath != "/workspace/cache" {
+		t.Fatalf("expected updated storage mount path, got %+v", updated.StorageMounts)
+	}
+}
+
+func TestService_CreateGPUUnit_RejectsStorageAlreadyMountedByAnotherActiveUnit(t *testing.T) {
+	svc, ctx, cancel := newOperatorService(t)
+	defer cancel()
+
+	seedStockUnit(t, ctx, svc, stockSeedOptions{
+		unitName:     "stock-g1-001",
+		specName:     "g1.1",
+		phase:        runtimev1alpha1.PhaseReady,
+		readyMessage: runtimev1alpha1.StatusMessageStockReady,
+	})
+	seedStockUnit(t, ctx, svc, stockSeedOptions{
+		unitName:     "stock-g1-002",
+		specName:     "g1.1",
+		phase:        runtimev1alpha1.PhaseReady,
+		readyMessage: runtimev1alpha1.StatusMessageStockReady,
+	})
+	seedGPUStorage(t, ctx, svc, gpuStorageSeedOptions{
+		name:      "model-cache",
+		namespace: runtimev1alpha1.DefaultInstanceNamespace,
+		size:      "20Gi",
+		phase:     runtimev1alpha1.StoragePhaseReady,
+	})
+
+	_, _, err := svc.CreateGPUUnit(ctx, CreateGPUUnitRequest{
+		OperationID: "gpu-create-storage-exclusive-1",
+		Name:        "demo-instance-a",
+		SpecName:    "g1.1",
+		Image:       "python:3.12",
+		StorageMounts: []runtimev1alpha1.GPUUnitStorageMount{{
+			Name:      "model-cache",
+			MountPath: "/data",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("create first gpu unit error: %v", err)
+	}
+
+	_, _, err = svc.CreateGPUUnit(ctx, CreateGPUUnitRequest{
+		OperationID: "gpu-create-storage-exclusive-2",
+		Name:        "demo-instance-b",
+		SpecName:    "g1.1",
+		Image:       "python:3.12",
+		StorageMounts: []runtimev1alpha1.GPUUnitStorageMount{{
+			Name:      "model-cache",
+			MountPath: "/data",
+		}},
+	})
+	if err == nil {
+		t.Fatalf("expected create conflict when storage is already mounted")
+	}
+
+	var conflictErr *ConflictError
+	if !errors.As(err, &conflictErr) {
+		t.Fatalf("expected conflict error, got %T", err)
+	}
+}
+
+func TestService_UpdateGPUUnit_RejectsStorageAlreadyMountedByAnotherActiveUnit(t *testing.T) {
+	svc, ctx, cancel := newOperatorService(t)
+	defer cancel()
+
+	seedStockUnit(t, ctx, svc, stockSeedOptions{
+		unitName:     "stock-g1-001",
+		specName:     "g1.1",
+		phase:        runtimev1alpha1.PhaseReady,
+		readyMessage: runtimev1alpha1.StatusMessageStockReady,
+	})
+	seedStockUnit(t, ctx, svc, stockSeedOptions{
+		unitName:     "stock-g1-002",
+		specName:     "g1.1",
+		phase:        runtimev1alpha1.PhaseReady,
+		readyMessage: runtimev1alpha1.StatusMessageStockReady,
+	})
+	seedGPUStorage(t, ctx, svc, gpuStorageSeedOptions{
+		name:      "model-cache",
+		namespace: runtimev1alpha1.DefaultInstanceNamespace,
+		size:      "20Gi",
+		phase:     runtimev1alpha1.StoragePhaseReady,
+	})
+
+	_, _, err := svc.CreateGPUUnit(ctx, CreateGPUUnitRequest{
+		OperationID: "gpu-create-storage-exclusive-update-1",
+		Name:        "demo-instance-a",
+		SpecName:    "g1.1",
+		Image:       "python:3.12",
+		StorageMounts: []runtimev1alpha1.GPUUnitStorageMount{{
+			Name:      "model-cache",
+			MountPath: "/data",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("create first gpu unit error: %v", err)
+	}
+
+	_, _, err = svc.CreateGPUUnit(ctx, CreateGPUUnitRequest{
+		OperationID: "gpu-create-storage-exclusive-update-2",
+		Name:        "demo-instance-b",
+		SpecName:    "g1.1",
+		Image:       "python:3.12",
+	})
+	if err != nil {
+		t.Fatalf("create second gpu unit error: %v", err)
+	}
+
+	_, err = svc.UpdateGPUUnit(ctx, runtimev1alpha1.DefaultInstanceNamespace, "demo-instance-b", UpdateGPUUnitRequest{
+		StorageMounts: &[]runtimev1alpha1.GPUUnitStorageMount{{
+			Name:      "model-cache",
+			MountPath: "/workspace/cache",
+		}},
+	})
+	if err == nil {
+		t.Fatalf("expected update conflict when storage is already mounted")
+	}
+
+	var conflictErr *ConflictError
+	if !errors.As(err, &conflictErr) {
+		t.Fatalf("expected conflict error, got %T", err)
+	}
+}
+
 func TestService_UpdateListAndDeleteGPUUnit(t *testing.T) {
 	svc, ctx, cancel := newOperatorService(t)
 	defer cancel()

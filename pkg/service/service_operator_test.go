@@ -27,6 +27,7 @@ func newOperatorService(t *testing.T) (*Service, context.Context, context.Cancel
 	cl := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithStatusSubresource(&runtimev1alpha1.GPUUnit{}).
+		WithStatusSubresource(&runtimev1alpha1.GPUStorage{}).
 		Build()
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))

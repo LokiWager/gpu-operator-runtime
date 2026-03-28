@@ -7,14 +7,7 @@ rules:
 - apiGroups:
   - ""
   resources:
-  - pods
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
-  - ""
-  resources:
+  - persistentvolumeclaims
   - services
   verbs:
   - create
@@ -23,6 +16,14 @@ rules:
   - list
   - patch
   - update
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - get
+  - list
   - watch
 - apiGroups:
   - apps
@@ -39,6 +40,7 @@ rules:
 - apiGroups:
   - runtime.lokiwager.io
   resources:
+  - gpustorages
   - gpuunits
   verbs:
   - create
@@ -51,12 +53,14 @@ rules:
 - apiGroups:
   - runtime.lokiwager.io
   resources:
+  - gpustorages/finalizers
   - gpuunits/finalizers
   verbs:
   - update
 - apiGroups:
   - runtime.lokiwager.io
   resources:
+  - gpustorages/status
   - gpuunits/status
   verbs:
   - get

@@ -191,6 +191,147 @@ func TestReconcileInstanceGPUUnitCreatesDeploymentAndService(t *testing.T) {
 	}
 }
 
+func TestReconcileInstanceGPUUnitMountsReadyStorage(t *testing.T) {
+	scheme := newControllerScheme(t)
+
+	instance := &runtimev1alpha1.GPUUnit{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: runtimev1alpha1.GroupVersion.String(),
+			Kind:       "GPUUnit",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "demo-instance",
+			Namespace: runtimev1alpha1.DefaultInstanceNamespace,
+		},
+		Spec: runtimev1alpha1.GPUUnitSpec{
+			SpecName: "g1.1",
+			Image:    "python:3.12",
+			Memory:   "16Gi",
+			Template: runtimev1alpha1.GPUUnitTemplate{
+				Ports: []runtimev1alpha1.GPUUnitPortSpec{{
+					Name: "http",
+					Port: 8080,
+				}},
+			},
+			Access: runtimev1alpha1.GPUUnitAccess{
+				PrimaryPort: "http",
+				Scheme:      "http",
+			},
+			StorageMounts: []runtimev1alpha1.GPUUnitStorageMount{{
+				Name:      "model-cache",
+				MountPath: "/data",
+			}},
+		},
+	}
+	storage := &runtimev1alpha1.GPUStorage{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "model-cache",
+			Namespace: runtimev1alpha1.DefaultInstanceNamespace,
+		},
+		Spec: runtimev1alpha1.GPUStorageSpec{Size: "20Gi"},
+		Status: runtimev1alpha1.GPUStorageStatus{
+			Phase: runtimev1alpha1.StoragePhaseReady,
+			Conditions: []metav1.Condition{{
+				Type:    runtimev1alpha1.ConditionReady,
+				Status:  metav1.ConditionTrue,
+				Reason:  runtimev1alpha1.ReasonStorageReady,
+				Message: runtimev1alpha1.StatusMessageStorageReady,
+			}},
+		},
+	}
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&runtimev1alpha1.GPUUnit{}).
+		WithObjects(instance, storage).
+		Build()
+
+	reconciler := &GPUUnitReconciler{Client: cl, Scheme: scheme}
+	_, err := reconciler.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: instance.Namespace, Name: instance.Name},
+	})
+	if err != nil {
+		t.Fatalf("reconcile error: %v", err)
+	}
+
+	var dep appsv1.Deployment
+	if err := cl.Get(context.Background(), types.NamespacedName{Namespace: instance.Namespace, Name: deploymentNameForUnit(instance.Name)}, &dep); err != nil {
+		t.Fatalf("deployment should be created: %v", err)
+	}
+	if len(dep.Spec.Template.Spec.Volumes) != 1 {
+		t.Fatalf("expected one pvc-backed volume, got %+v", dep.Spec.Template.Spec.Volumes)
+	}
+	if dep.Spec.Template.Spec.Volumes[0].PersistentVolumeClaim == nil || dep.Spec.Template.Spec.Volumes[0].PersistentVolumeClaim.ClaimName != "model-cache" {
+		t.Fatalf("expected pvc claim model-cache, got %+v", dep.Spec.Template.Spec.Volumes[0].PersistentVolumeClaim)
+	}
+	if len(dep.Spec.Template.Spec.Containers[0].VolumeMounts) != 1 || dep.Spec.Template.Spec.Containers[0].VolumeMounts[0].MountPath != "/data" {
+		t.Fatalf("expected volume mount /data, got %+v", dep.Spec.Template.Spec.Containers[0].VolumeMounts)
+	}
+}
+
+func TestReconcileInstanceGPUUnitPendingStorageMarksStatusWaiting(t *testing.T) {
+	scheme := newControllerScheme(t)
+
+	instance := &runtimev1alpha1.GPUUnit{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: runtimev1alpha1.GroupVersion.String(),
+			Kind:       "GPUUnit",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "demo-instance",
+			Namespace: runtimev1alpha1.DefaultInstanceNamespace,
+		},
+		Spec: runtimev1alpha1.GPUUnitSpec{
+			SpecName: "g1.1",
+			Image:    "python:3.12",
+			Memory:   "16Gi",
+			StorageMounts: []runtimev1alpha1.GPUUnitStorageMount{{
+				Name:      "model-cache",
+				MountPath: "/data",
+			}},
+		},
+	}
+	storage := &runtimev1alpha1.GPUStorage{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "model-cache",
+			Namespace: runtimev1alpha1.DefaultInstanceNamespace,
+		},
+		Spec: runtimev1alpha1.GPUStorageSpec{Size: "20Gi"},
+		Status: runtimev1alpha1.GPUStorageStatus{
+			Phase: runtimev1alpha1.StoragePhasePending,
+			Conditions: []metav1.Condition{{
+				Type:    runtimev1alpha1.ConditionReady,
+				Status:  metav1.ConditionFalse,
+				Reason:  runtimev1alpha1.ReasonStoragePending,
+				Message: runtimev1alpha1.StatusMessageStoragePending,
+			}},
+		},
+	}
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&runtimev1alpha1.GPUUnit{}).
+		WithObjects(instance, storage).
+		Build()
+
+	reconciler := &GPUUnitReconciler{Client: cl, Scheme: scheme}
+	_, err := reconciler.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: instance.Namespace, Name: instance.Name},
+	})
+	if err != nil {
+		t.Fatalf("reconcile error: %v", err)
+	}
+
+	var got runtimev1alpha1.GPUUnit
+	if err := cl.Get(context.Background(), types.NamespacedName{Namespace: instance.Namespace, Name: instance.Name}, &got); err != nil {
+		t.Fatalf("get gpu unit error: %v", err)
+	}
+	cond := apimeta.FindStatusCondition(got.Status.Conditions, runtimev1alpha1.ConditionReady)
+	if cond == nil || cond.Reason != runtimev1alpha1.ReasonStorageNotReady {
+		t.Fatalf("expected storage-not-ready condition, got %+v", cond)
+	}
+}
+
 func TestReconcileGPUUnitInvalidAccessMarksStatusFailed(t *testing.T) {
 	scheme := newControllerScheme(t)
 

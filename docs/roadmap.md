@@ -7,8 +7,8 @@
 5. Scheduling and resource orchestration
 6. API contracts and idempotency
 7. Single GPUUnit model and stock handoff
-8. Storage architecture I (PVC + accessor)
-9. Storage architecture II (Ceph jobs and recovery)
+8. Storage architecture I (PVC-backed storage resources)
+9. Storage architecture II (accessors, data jobs, and recovery)
 10. Tenant isolation and security baseline
 11. Metrics, events, and alerting
 12. Sidecar communication channels (NATS/Kafka/SSH)

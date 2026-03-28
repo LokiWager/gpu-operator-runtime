@@ -114,6 +114,13 @@ func main() {
 		setupLog.Error(err, "Failed to create controller", "controller", "GPUUnit")
 		os.Exit(1)
 	}
+	if err := (&controller.GPUStorageReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to create controller", "controller", "GPUStorage")
+		os.Exit(1)
+	}
 
 	kubeClient, err := kubernetes.NewForConfig(restConfig)
 	if err != nil {

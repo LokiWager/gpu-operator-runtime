@@ -19,6 +19,16 @@ type GPUUnitResponse struct {
 	Data domain.GPUUnitRuntime `json:"data"`
 }
 
+// GPUStorageListResponse wraps a list of storage views for Swagger generation.
+type GPUStorageListResponse struct {
+	Data []domain.GPUStorageRuntime `json:"data"`
+}
+
+// GPUStorageResponse wraps one storage view for Swagger generation.
+type GPUStorageResponse struct {
+	Data domain.GPUStorageRuntime `json:"data"`
+}
+
 // OperatorJobResponse wraps one operator job payload for Swagger generation.
 type OperatorJobResponse struct {
 	Data domain.OperatorJob `json:"data"`

@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -52,7 +53,15 @@ func (r *GPUUnitReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, err
 	}
 
-	if _, err := desiredUnitPodTemplate(instance); err != nil {
+	storageMounts, storageReady, storageWaitMessage, err := r.resolveGPUUnitStorageMounts(ctx, &instance)
+	if err != nil {
+		if updateErr := r.markUnitFailed(ctx, &instance, "", "", runtimev1alpha1.ReasonStorageMountInvalid, err.Error()); updateErr != nil {
+			return ctrl.Result{}, updateErr
+		}
+		return ctrl.Result{}, nil
+	}
+
+	if _, err := desiredUnitPodTemplate(instance, storageMounts); err != nil {
 		if updateErr := r.markUnitFailed(ctx, &instance, "", "", runtimev1alpha1.ReasonInvalidSpec, err.Error()); updateErr != nil {
 			return ctrl.Result{}, updateErr
 		}
@@ -90,7 +99,7 @@ func (r *GPUUnitReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		serviceChanged = changed
 	}
 
-	dep, deploymentChanged, err := r.reconcileGPUUnitDeployment(ctx, &instance)
+	dep, deploymentChanged, err := r.reconcileGPUUnitDeployment(ctx, &instance, storageMounts)
 	if err != nil {
 		if errors.Is(err, errStatusOnly) {
 			return ctrl.Result{}, nil
@@ -109,12 +118,12 @@ func (r *GPUUnitReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, err
 	}
 
-	next := buildGPUUnitStatus(instance, dep.Status.AvailableReplicas, serviceName, accessURL, podFailureMessage)
+	next := buildGPUUnitStatus(instance, dep.Status.AvailableReplicas, serviceName, accessURL, podFailureMessage, storageReady, storageWaitMessage)
 	if err := r.updateGPUUnitStatus(ctx, &instance, next); err != nil {
 		return ctrl.Result{}, err
 	}
 
-	if serviceChanged || deploymentChanged {
+	if serviceChanged || deploymentChanged || !storageReady {
 		return ctrl.Result{RequeueAfter: requeueAfterUpdate}, nil
 	}
 	return ctrl.Result{}, nil
@@ -134,7 +143,7 @@ func (r *GPUUnitReconciler) SetupWithManager(mgr ctrl.Manager) error {
 }
 
 // reconcileGPUUnitDeployment creates or updates the Deployment owned by a unit.
-func (r *GPUUnitReconciler) reconcileGPUUnitDeployment(ctx context.Context, instance *runtimev1alpha1.GPUUnit) (*appsv1.Deployment, bool, error) {
+func (r *GPUUnitReconciler) reconcileGPUUnitDeployment(ctx context.Context, instance *runtimev1alpha1.GPUUnit, storageMounts []resolvedGPUUnitStorageMount) (*appsv1.Deployment, bool, error) {
 	depName := deploymentNameForUnit(instance.Name)
 
 	var dep appsv1.Deployment
@@ -143,7 +152,7 @@ func (r *GPUUnitReconciler) reconcileGPUUnitDeployment(ctx context.Context, inst
 			return nil, false, err
 		}
 
-		newDep, err := desiredUnitDeployment(*instance)
+		newDep, err := desiredUnitDeployment(*instance, storageMounts)
 		if err != nil {
 			if markErr := r.markUnitFailed(ctx, instance, instance.Status.ServiceName, instance.Status.AccessURL, runtimev1alpha1.ReasonInvalidSpec, err.Error()); markErr != nil {
 				return nil, false, markErr
@@ -159,7 +168,7 @@ func (r *GPUUnitReconciler) reconcileGPUUnitDeployment(ctx context.Context, inst
 		return newDep, true, nil
 	}
 
-	expectedTemplate, err := desiredUnitPodTemplate(*instance)
+	expectedTemplate, err := desiredUnitPodTemplate(*instance, storageMounts)
 	if err != nil {
 		if markErr := r.markUnitFailed(ctx, instance, instance.Status.ServiceName, instance.Status.AccessURL, runtimev1alpha1.ReasonInvalidSpec, err.Error()); markErr != nil {
 			return nil, false, markErr
@@ -310,4 +319,50 @@ func (r *GPUUnitReconciler) findGPUUnitPodFailureMessage(ctx context.Context, in
 		}
 	}
 	return "", nil
+}
+
+// resolveGPUUnitStorageMounts loads referenced storage objects and reports whether they are ready.
+func (r *GPUUnitReconciler) resolveGPUUnitStorageMounts(ctx context.Context, instance *runtimev1alpha1.GPUUnit) ([]resolvedGPUUnitStorageMount, bool, string, error) {
+	if isStockUnit(*instance) {
+		if len(instance.Spec.StorageMounts) > 0 {
+			return nil, false, "", errors.New("stock units cannot declare storageMounts")
+		}
+		return nil, true, "", nil
+	}
+
+	if len(instance.Spec.StorageMounts) == 0 {
+		return nil, true, "", nil
+	}
+
+	attachments := make([]resolvedGPUUnitStorageMount, 0, len(instance.Spec.StorageMounts))
+	pending := make([]string, 0)
+	allReady := true
+
+	for _, mount := range instance.Spec.StorageMounts {
+		var storage runtimev1alpha1.GPUStorage
+		if err := r.Get(ctx, types.NamespacedName{Namespace: instance.Namespace, Name: mount.Name}, &storage); err != nil {
+			if apierrors.IsNotFound(err) {
+				return nil, false, "", errors.New("referenced gpu storage " + instance.Namespace + "/" + mount.Name + " does not exist")
+			}
+			return nil, false, "", err
+		}
+
+		ready := storage.Status.Phase == runtimev1alpha1.StoragePhaseReady
+		if !ready {
+			allReady = false
+			pending = append(pending, storage.Name)
+		}
+
+		attachments = append(attachments, resolvedGPUUnitStorageMount{
+			Mount:     mount,
+			ClaimName: storage.Name,
+			Ready:     ready,
+		})
+	}
+
+	if allReady {
+		return attachments, true, "", nil
+	}
+
+	return attachments, false, "Waiting for attached storage to become ready: " + strings.Join(pending, ", "), nil
 }

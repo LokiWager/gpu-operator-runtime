@@ -21,6 +21,281 @@ const docTemplate = `{
     "host": "{{.Host}}",
     "basePath": "{{.BasePath}}",
     "paths": {
+        "/gpu-storages": {
+            "get": {
+                "description": "List RBD-backed GPU storage resources, optionally filtered by namespace.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "storage"
+                ],
+                "summary": "List GPU storages",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Namespace filter",
+                        "name": "namespace",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.GPUStorageListResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "description": "Persist a GPUStorage resource. By default it targets the rook-ceph-block RBD StorageClass, and the controller reconciles the backing PersistentVolumeClaim asynchronously.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "storage"
+                ],
+                "summary": "Create a GPU storage",
+                "parameters": [
+                    {
+                        "description": "Create GPU storage request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/service.CreateGPUStorageRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/api.GPUStorageResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/gpu-storages/{name}": {
+            "get": {
+                "description": "Get the desired and observed state of one GPUStorage resource.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "storage"
+                ],
+                "summary": "Get a GPU storage",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "GPU storage name",
+                        "name": "name",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Namespace filter",
+                        "name": "namespace",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.GPUStorageResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            },
+            "put": {
+                "description": "Update the mutable storage fields on a GPUStorage resource. This chapter only allows storage expansion.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "storage"
+                ],
+                "summary": "Update a GPU storage",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "GPU storage name",
+                        "name": "name",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Namespace filter",
+                        "name": "namespace",
+                        "in": "query"
+                    },
+                    {
+                        "description": "Update GPU storage request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/service.UpdateGPUStorageRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.GPUStorageResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "description": "Delete a GPUStorage resource after verifying that no active GPU unit still mounts it.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "storage"
+                ],
+                "summary": "Delete a GPU storage",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "GPU storage name",
+                        "name": "name",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Namespace filter",
+                        "name": "namespace",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/gpu-units": {
             "get": {
                 "description": "List active GPU unit resources that were created by consuming stock units.",
@@ -67,7 +342,7 @@ const docTemplate = `{
                 }
             },
             "post": {
-                "description": "Consume one ready stock unit, keep its reserved resource envelope, and persist an active GPUUnit with the caller's runtime image, template, and access settings. Replays with the same operationID and payload are idempotent.",
+                "description": "Consume one ready stock unit, keep its reserved resource envelope, and persist an active GPUUnit with the caller's runtime image, template, access settings, and storage mounts. Replays with the same operationID and payload are idempotent.",
                 "consumes": [
                     "application/json"
                 ],
@@ -182,7 +457,7 @@ const docTemplate = `{
                 }
             },
             "put": {
-                "description": "Update the mutable runtime contract of an active GPU unit, including image, template, and access settings.",
+                "description": "Update the mutable runtime contract of an active GPU unit, including image, template, access settings, and storage mounts.",
                 "consumes": [
                     "application/json"
                 ],
@@ -454,6 +729,25 @@ const docTemplate = `{
                 }
             }
         },
+        "api.GPUStorageListResponse": {
+            "type": "object",
+            "properties": {
+                "data": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/domain.GPUStorageRuntime"
+                    }
+                }
+            }
+        },
+        "api.GPUStorageResponse": {
+            "type": "object",
+            "properties": {
+                "data": {
+                    "$ref": "#/definitions/domain.GPUStorageRuntime"
+                }
+            }
+        },
         "api.GPUUnitListResponse": {
             "type": "object",
             "properties": {
@@ -486,6 +780,50 @@ const docTemplate = `{
             "properties": {
                 "data": {
                     "$ref": "#/definitions/domain.OperatorJob"
+                }
+            }
+        },
+        "domain.GPUStorageRuntime": {
+            "type": "object",
+            "properties": {
+                "capacity": {
+                    "type": "string"
+                },
+                "claimName": {
+                    "type": "string"
+                },
+                "lastSyncTime": {
+                    "type": "string"
+                },
+                "message": {
+                    "type": "string"
+                },
+                "mountedBy": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "name": {
+                    "type": "string"
+                },
+                "namespace": {
+                    "type": "string"
+                },
+                "observedGeneration": {
+                    "type": "integer"
+                },
+                "phase": {
+                    "type": "string"
+                },
+                "reason": {
+                    "type": "string"
+                },
+                "size": {
+                    "type": "string"
+                },
+                "storageClassName": {
+                    "type": "string"
                 }
             }
         },
@@ -545,6 +883,12 @@ const docTemplate = `{
                 },
                 "specName": {
                     "type": "string"
+                },
+                "storageMounts": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/v1alpha1.GPUUnitStorageMount"
+                    }
                 },
                 "template": {
                     "$ref": "#/definitions/v1alpha1.GPUUnitTemplate"
@@ -624,6 +968,23 @@ const docTemplate = `{
                 "OperatorJobFailed"
             ]
         },
+        "service.CreateGPUStorageRequest": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string"
+                },
+                "namespace": {
+                    "type": "string"
+                },
+                "size": {
+                    "type": "string"
+                },
+                "storageClassName": {
+                    "type": "string"
+                }
+            }
+        },
         "service.CreateGPUUnitRequest": {
             "type": "object",
             "properties": {
@@ -647,6 +1008,12 @@ const docTemplate = `{
                 },
                 "stockNamespace": {
                     "type": "string"
+                },
+                "storageMounts": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/v1alpha1.GPUUnitStorageMount"
+                    }
                 },
                 "template": {
                     "$ref": "#/definitions/v1alpha1.GPUUnitTemplate"
@@ -673,6 +1040,14 @@ const docTemplate = `{
                 }
             }
         },
+        "service.UpdateGPUStorageRequest": {
+            "type": "object",
+            "properties": {
+                "size": {
+                    "type": "string"
+                }
+            }
+        },
         "service.UpdateGPUUnitRequest": {
             "type": "object",
             "properties": {
@@ -681,6 +1056,12 @@ const docTemplate = `{
                 },
                 "image": {
                     "type": "string"
+                },
+                "storageMounts": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/v1alpha1.GPUUnitStorageMount"
+                    }
                 },
                 "template": {
                     "$ref": "#/definitions/v1alpha1.GPUUnitTemplate"
@@ -734,6 +1115,20 @@ const docTemplate = `{
                 },
                 "protocol": {
                     "$ref": "#/definitions/v1.Protocol"
+                }
+            }
+        },
+        "v1alpha1.GPUUnitStorageMount": {
+            "type": "object",
+            "properties": {
+                "mountPath": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "readOnly": {
+                    "type": "boolean"
                 }
             }
         },

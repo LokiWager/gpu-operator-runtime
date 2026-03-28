@@ -55,6 +55,11 @@ func (s *Server) routes() {
 
 	s.echo.GET("/swagger/*", echoSwagger.WrapHandler)
 	s.echo.GET("/api/v1/health", s.handleHealth)
+	s.echo.GET("/api/v1/gpu-storages", s.handleListGPUStorages)
+	s.echo.POST("/api/v1/gpu-storages", s.handleCreateGPUStorage)
+	s.echo.GET("/api/v1/gpu-storages/:name", s.handleGetGPUStorage)
+	s.echo.PUT("/api/v1/gpu-storages/:name", s.handleUpdateGPUStorage)
+	s.echo.DELETE("/api/v1/gpu-storages/:name", s.handleDeleteGPUStorage)
 	s.echo.GET("/api/v1/gpu-units", s.handleListGPUUnits)
 	s.echo.POST("/api/v1/gpu-units", s.handleCreateGPUUnit)
 	s.echo.GET("/api/v1/gpu-units/:name", s.handleGetGPUUnit)
@@ -62,6 +67,119 @@ func (s *Server) routes() {
 	s.echo.DELETE("/api/v1/gpu-units/:name", s.handleDeleteGPUUnit)
 	s.echo.POST("/api/v1/operator/stock-units", s.handleCreateStockUnits)
 	s.echo.GET("/api/v1/operator/jobs/:operationID", s.handleOperatorJobByID)
+}
+
+// handleListGPUStorages godoc
+// @Summary List GPU storages
+// @Description List RBD-backed GPU storage resources, optionally filtered by namespace.
+// @Tags storage
+// @Produce json
+// @Param namespace query string false "Namespace filter"
+// @Success 200 {object} GPUStorageListResponse
+// @Failure 400 {object} ErrorResponse
+// @Failure 503 {object} ErrorResponse
+// @Failure 500 {object} ErrorResponse
+// @Router /gpu-storages [get]
+func (s *Server) handleListGPUStorages(c echo.Context) error {
+	namespace := c.QueryParam("namespace")
+	items, err := s.service.ListGPUStorages(c.Request().Context(), namespace)
+	if err != nil {
+		return writeServiceError(c, err, "list_gpustorages_failed")
+	}
+	return writeData(c, http.StatusOK, items)
+}
+
+// handleCreateGPUStorage godoc
+// @Summary Create a GPU storage
+// @Description Persist a GPUStorage resource. By default it targets the rook-ceph-block RBD StorageClass, and the controller reconciles the backing PersistentVolumeClaim asynchronously.
+// @Tags storage
+// @Accept json
+// @Produce json
+// @Param request body service.CreateGPUStorageRequest true "Create GPU storage request"
+// @Success 201 {object} GPUStorageResponse
+// @Failure 400 {object} ErrorResponse
+// @Failure 409 {object} ErrorResponse
+// @Failure 503 {object} ErrorResponse
+// @Failure 500 {object} ErrorResponse
+// @Router /gpu-storages [post]
+func (s *Server) handleCreateGPUStorage(c echo.Context) error {
+	var req service.CreateGPUStorageRequest
+	if err := c.Bind(&req); err != nil {
+		return writeError(c, http.StatusBadRequest, "invalid_request", err.Error())
+	}
+
+	storage, err := s.service.CreateGPUStorage(c.Request().Context(), req)
+	if err != nil {
+		return writeServiceError(c, err, "create_gpustorage_failed")
+	}
+	return writeData(c, http.StatusCreated, storage)
+}
+
+// handleGetGPUStorage godoc
+// @Summary Get a GPU storage
+// @Description Get the desired and observed state of one GPUStorage resource.
+// @Tags storage
+// @Produce json
+// @Param name path string true "GPU storage name"
+// @Param namespace query string false "Namespace filter"
+// @Success 200 {object} GPUStorageResponse
+// @Failure 400 {object} ErrorResponse
+// @Failure 404 {object} ErrorResponse
+// @Failure 500 {object} ErrorResponse
+// @Router /gpu-storages/{name} [get]
+func (s *Server) handleGetGPUStorage(c echo.Context) error {
+	storage, err := s.service.GetGPUStorage(c.Request().Context(), c.QueryParam("namespace"), c.Param("name"))
+	if err != nil {
+		return writeServiceError(c, err, "gpustorage_not_found")
+	}
+	return writeData(c, http.StatusOK, storage)
+}
+
+// handleUpdateGPUStorage godoc
+// @Summary Update a GPU storage
+// @Description Update the mutable storage fields on a GPUStorage resource. This chapter only allows storage expansion.
+// @Tags storage
+// @Accept json
+// @Produce json
+// @Param name path string true "GPU storage name"
+// @Param namespace query string false "Namespace filter"
+// @Param request body service.UpdateGPUStorageRequest true "Update GPU storage request"
+// @Success 200 {object} GPUStorageResponse
+// @Failure 400 {object} ErrorResponse
+// @Failure 404 {object} ErrorResponse
+// @Failure 500 {object} ErrorResponse
+// @Router /gpu-storages/{name} [put]
+func (s *Server) handleUpdateGPUStorage(c echo.Context) error {
+	var req service.UpdateGPUStorageRequest
+	if err := c.Bind(&req); err != nil {
+		return writeError(c, http.StatusBadRequest, "invalid_request", err.Error())
+	}
+
+	storage, err := s.service.UpdateGPUStorage(c.Request().Context(), c.QueryParam("namespace"), c.Param("name"), req)
+	if err != nil {
+		return writeServiceError(c, err, "update_gpustorage_failed")
+	}
+	return writeData(c, http.StatusOK, storage)
+}
+
+// handleDeleteGPUStorage godoc
+// @Summary Delete a GPU storage
+// @Description Delete a GPUStorage resource after verifying that no active GPU unit still mounts it.
+// @Tags storage
+// @Produce json
+// @Param name path string true "GPU storage name"
+// @Param namespace query string false "Namespace filter"
+// @Success 204 {string} string ""
+// @Failure 400 {object} ErrorResponse
+// @Failure 404 {object} ErrorResponse
+// @Failure 409 {object} ErrorResponse
+// @Failure 500 {object} ErrorResponse
+// @Router /gpu-storages/{name} [delete]
+func (s *Server) handleDeleteGPUStorage(c echo.Context) error {
+	if err := s.service.DeleteGPUStorage(c.Request().Context(), c.QueryParam("namespace"), c.Param("name")); err != nil {
+		return writeServiceError(c, err, "delete_gpustorage_failed")
+	}
+	return c.NoContent(http.StatusNoContent)
 }
 
 // handleListGPUUnits godoc
@@ -86,7 +204,7 @@ func (s *Server) handleListGPUUnits(c echo.Context) error {
 
 // handleCreateGPUUnit godoc
 // @Summary Create a GPU unit
-// @Description Consume one ready stock unit, keep its reserved resource envelope, and persist an active GPUUnit with the caller's runtime image, template, and access settings. Replays with the same operationID and payload are idempotent.
+// @Description Consume one ready stock unit, keep its reserved resource envelope, and persist an active GPUUnit with the caller's runtime image, template, access settings, and storage mounts. Replays with the same operationID and payload are idempotent.
 // @Tags runtime
 // @Accept json
 // @Produce json
@@ -136,7 +254,7 @@ func (s *Server) handleGetGPUUnit(c echo.Context) error {
 
 // handleUpdateGPUUnit godoc
 // @Summary Update a GPU unit
-// @Description Update the mutable runtime contract of an active GPU unit, including image, template, and access settings.
+// @Description Update the mutable runtime contract of an active GPU unit, including image, template, access settings, and storage mounts.
 // @Tags runtime
 // @Accept json
 // @Produce json

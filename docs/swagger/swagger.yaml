@@ -12,6 +12,18 @@ definitions:
       error:
         $ref: '#/definitions/api.APIError'
     type: object
+  api.GPUStorageListResponse:
+    properties:
+      data:
+        items:
+          $ref: '#/definitions/domain.GPUStorageRuntime'
+        type: array
+    type: object
+  api.GPUStorageResponse:
+    properties:
+      data:
+        $ref: '#/definitions/domain.GPUStorageRuntime'
+    type: object
   api.GPUUnitListResponse:
     properties:
       data:
@@ -33,6 +45,35 @@ definitions:
     properties:
       data:
         $ref: '#/definitions/domain.OperatorJob'
+    type: object
+  domain.GPUStorageRuntime:
+    properties:
+      capacity:
+        type: string
+      claimName:
+        type: string
+      lastSyncTime:
+        type: string
+      message:
+        type: string
+      mountedBy:
+        items:
+          type: string
+        type: array
+      name:
+        type: string
+      namespace:
+        type: string
+      observedGeneration:
+        type: integer
+      phase:
+        type: string
+      reason:
+        type: string
+      size:
+        type: string
+      storageClassName:
+        type: string
     type: object
   domain.GPUUnitRuntime:
     properties:
@@ -72,6 +113,10 @@ definitions:
         type: string
       specName:
         type: string
+      storageMounts:
+        items:
+          $ref: '#/definitions/v1alpha1.GPUUnitStorageMount'
+        type: array
       template:
         $ref: '#/definitions/v1alpha1.GPUUnitTemplate'
     type: object
@@ -125,6 +170,17 @@ definitions:
     - OperatorJobRunning
     - OperatorJobSucceeded
     - OperatorJobFailed
+  service.CreateGPUStorageRequest:
+    properties:
+      name:
+        type: string
+      namespace:
+        type: string
+      size:
+        type: string
+      storageClassName:
+        type: string
+    type: object
   service.CreateGPUUnitRequest:
     properties:
       access:
@@ -141,6 +197,10 @@ definitions:
         type: string
       stockNamespace:
         type: string
+      storageMounts:
+        items:
+          $ref: '#/definitions/v1alpha1.GPUUnitStorageMount'
+        type: array
       template:
         $ref: '#/definitions/v1alpha1.GPUUnitTemplate'
     type: object
@@ -157,12 +217,21 @@ definitions:
       specName:
         type: string
     type: object
+  service.UpdateGPUStorageRequest:
+    properties:
+      size:
+        type: string
+    type: object
   service.UpdateGPUUnitRequest:
     properties:
       access:
         $ref: '#/definitions/v1alpha1.GPUUnitAccess'
       image:
         type: string
+      storageMounts:
+        items:
+          $ref: '#/definitions/v1alpha1.GPUUnitStorageMount'
+        type: array
       template:
         $ref: '#/definitions/v1alpha1.GPUUnitTemplate'
     type: object
@@ -202,6 +271,15 @@ definitions:
       protocol:
         $ref: '#/definitions/v1.Protocol'
     type: object
+  v1alpha1.GPUUnitStorageMount:
+    properties:
+      mountPath:
+        type: string
+      name:
+        type: string
+      readOnly:
+        type: boolean
+    type: object
   v1alpha1.GPUUnitTemplate:
     properties:
       args:
@@ -231,6 +309,192 @@ info:
   title: GPU Operator Runtime API
   version: "1.0"
 paths:
+  /gpu-storages:
+    get:
+      description: List RBD-backed GPU storage resources, optionally filtered by namespace.
+      parameters:
+      - description: Namespace filter
+        in: query
+        name: namespace
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.GPUStorageListResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+      summary: List GPU storages
+      tags:
+      - storage
+    post:
+      consumes:
+      - application/json
+      description: Persist a GPUStorage resource. By default it targets the rook-ceph-block
+        RBD StorageClass, and the controller reconciles the backing PersistentVolumeClaim
+        asynchronously.
+      parameters:
+      - description: Create GPU storage request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/service.CreateGPUStorageRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/api.GPUStorageResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+      summary: Create a GPU storage
+      tags:
+      - storage
+  /gpu-storages/{name}:
+    delete:
+      description: Delete a GPUStorage resource after verifying that no active GPU
+        unit still mounts it.
+      parameters:
+      - description: GPU storage name
+        in: path
+        name: name
+        required: true
+        type: string
+      - description: Namespace filter
+        in: query
+        name: namespace
+        type: string
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No Content
+          schema:
+            type: string
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+      summary: Delete a GPU storage
+      tags:
+      - storage
+    get:
+      description: Get the desired and observed state of one GPUStorage resource.
+      parameters:
+      - description: GPU storage name
+        in: path
+        name: name
+        required: true
+        type: string
+      - description: Namespace filter
+        in: query
+        name: namespace
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.GPUStorageResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+      summary: Get a GPU storage
+      tags:
+      - storage
+    put:
+      consumes:
+      - application/json
+      description: Update the mutable storage fields on a GPUStorage resource. This
+        chapter only allows storage expansion.
+      parameters:
+      - description: GPU storage name
+        in: path
+        name: name
+        required: true
+        type: string
+      - description: Namespace filter
+        in: query
+        name: namespace
+        type: string
+      - description: Update GPU storage request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/service.UpdateGPUStorageRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.GPUStorageResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+      summary: Update a GPU storage
+      tags:
+      - storage
   /gpu-units:
     get:
       description: List active GPU unit resources that were created by consuming stock
@@ -266,8 +530,9 @@ paths:
       consumes:
       - application/json
       description: Consume one ready stock unit, keep its reserved resource envelope,
-        and persist an active GPUUnit with the caller's runtime image, template, and
-        access settings. Replays with the same operationID and payload are idempotent.
+        and persist an active GPUUnit with the caller's runtime image, template, access
+        settings, and storage mounts. Replays with the same operationID and payload
+        are idempotent.
       parameters:
       - description: Create GPU unit request
         in: body
@@ -379,7 +644,7 @@ paths:
       consumes:
       - application/json
       description: Update the mutable runtime contract of an active GPU unit, including
-        image, template, and access settings.
+        image, template, access settings, and storage mounts.
       parameters:
       - description: GPU unit name
         in: path

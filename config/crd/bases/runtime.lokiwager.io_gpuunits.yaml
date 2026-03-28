@@ -75,6 +75,24 @@ spec:
                 description: SpecName is the requested runtime flavor, for example
                   "g1.1".
                 type: string
+              storageMounts:
+                description: StorageMounts declares the persistent storage attachments
+                  mounted into the runtime.
+                items:
+                  description: GPUUnitStorageMount declares one named storage attachment
+                    for the runtime container.
+                  properties:
+                    mountPath:
+                      type: string
+                    name:
+                      type: string
+                    readOnly:
+                      type: boolean
+                  required:
+                  - mountPath
+                  - name
+                  type: object
+                type: array
               template:
                 description: Template is the runtime-facing pod slice owned by this
                   unit.

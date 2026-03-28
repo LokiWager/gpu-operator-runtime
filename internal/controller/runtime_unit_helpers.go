@@ -22,11 +22,17 @@ const (
 	requeueAfterUpdate     = 2 * time.Second
 )
 
+type resolvedGPUUnitStorageMount struct {
+	Mount     runtimev1alpha1.GPUUnitStorageMount
+	ClaimName string
+	Ready     bool
+}
+
 // desiredUnitDeployment builds the single-replica workload owned by one GPUUnit.
-func desiredUnitDeployment(instance runtimev1alpha1.GPUUnit) (*appsv1.Deployment, error) {
+func desiredUnitDeployment(instance runtimev1alpha1.GPUUnit, storageMounts []resolvedGPUUnitStorageMount) (*appsv1.Deployment, error) {
 	name := deploymentNameForUnit(instance.Name)
 	labels := unitObjectLabels(instance)
-	template, err := desiredUnitPodTemplate(instance)
+	template, err := desiredUnitPodTemplate(instance, storageMounts)
 	if err != nil {
 		return nil, err
 	}
@@ -46,7 +52,7 @@ func desiredUnitDeployment(instance runtimev1alpha1.GPUUnit) (*appsv1.Deployment
 }
 
 // desiredUnitPodTemplate converts the unit spec into the pod template owned by the Deployment.
-func desiredUnitPodTemplate(instance runtimev1alpha1.GPUUnit) (corev1.PodTemplateSpec, error) {
+func desiredUnitPodTemplate(instance runtimev1alpha1.GPUUnit, storageMounts []resolvedGPUUnitStorageMount) (corev1.PodTemplateSpec, error) {
 	labels := unitPodLabels(instance)
 	image := instance.Spec.Image
 	if image == "" {
@@ -81,6 +87,7 @@ func desiredUnitPodTemplate(instance runtimev1alpha1.GPUUnit) (corev1.PodTemplat
 		Env:             defaultGPUUnitEnv(instance),
 		Ports:           desiredContainerPorts(instance.Spec.Template.Ports),
 		Resources:       resources,
+		VolumeMounts:    desiredStorageVolumeMounts(storageMounts),
 	}
 	if len(instance.Spec.Template.Command) > 0 {
 		container.Command = append([]string(nil), instance.Spec.Template.Command...)
@@ -101,7 +108,10 @@ func desiredUnitPodTemplate(instance runtimev1alpha1.GPUUnit) (corev1.PodTemplat
 
 	return corev1.PodTemplateSpec{
 		ObjectMeta: metav1.ObjectMeta{Labels: labels},
-		Spec:       corev1.PodSpec{Containers: []corev1.Container{container}},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{container},
+			Volumes:    desiredStorageVolumes(storageMounts),
+		},
 	}, nil
 }
 
@@ -164,6 +174,41 @@ func desiredGPUUnitService(instance runtimev1alpha1.GPUUnit, ports []corev1.Serv
 			Ports:    ports,
 		},
 	}
+}
+
+// desiredStorageVolumeMounts renders container mounts for each resolved storage attachment.
+func desiredStorageVolumeMounts(storageMounts []resolvedGPUUnitStorageMount) []corev1.VolumeMount {
+	out := make([]corev1.VolumeMount, 0, len(storageMounts))
+	for i, mount := range storageMounts {
+		out = append(out, corev1.VolumeMount{
+			Name:      volumeNameForStorageMount(i),
+			MountPath: mount.Mount.MountPath,
+			ReadOnly:  mount.Mount.ReadOnly,
+		})
+	}
+	return out
+}
+
+// desiredStorageVolumes renders pod volumes for each resolved storage attachment.
+func desiredStorageVolumes(storageMounts []resolvedGPUUnitStorageMount) []corev1.Volume {
+	out := make([]corev1.Volume, 0, len(storageMounts))
+	for i, mount := range storageMounts {
+		out = append(out, corev1.Volume{
+			Name: volumeNameForStorageMount(i),
+			VolumeSource: corev1.VolumeSource{
+				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+					ClaimName: mount.ClaimName,
+					ReadOnly:  mount.Mount.ReadOnly,
+				},
+			},
+		})
+	}
+	return out
+}
+
+// volumeNameForStorageMount returns the deterministic pod volume name for one attachment.
+func volumeNameForStorageMount(index int) string {
+	return fmt.Sprintf("storage-%d", index)
 }
 
 // normalizeControllerGPUUnitAccess validates controller-side service exposure settings.
@@ -296,7 +341,7 @@ func firstNonEmpty(values ...string) string {
 }
 
 // buildGPUUnitStatus derives the status snapshot written back after each reconcile.
-func buildGPUUnitStatus(instance runtimev1alpha1.GPUUnit, available int32, serviceName, accessURL, failureMessage string) runtimev1alpha1.GPUUnitStatus {
+func buildGPUUnitStatus(instance runtimev1alpha1.GPUUnit, available int32, serviceName, accessURL, failureMessage string, storageReady bool, storageWaitMessage string) runtimev1alpha1.GPUUnitStatus {
 	next := runtimev1alpha1.GPUUnitStatus{
 		ReadyReplicas:      available,
 		ObservedGeneration: instance.Generation,
@@ -342,6 +387,14 @@ func buildGPUUnitStatus(instance runtimev1alpha1.GPUUnit, available int32, servi
 			condition.Status = metav1.ConditionFalse
 			condition.Reason = runtimev1alpha1.ReasonPodStartupFailed
 			condition.Message = failureMessage
+		case !storageReady:
+			next.Phase = runtimev1alpha1.PhaseProgressing
+			condition.Status = metav1.ConditionFalse
+			condition.Reason = runtimev1alpha1.ReasonStorageNotReady
+			if storageWaitMessage == "" {
+				storageWaitMessage = runtimev1alpha1.StatusMessageUnitStorage
+			}
+			condition.Message = storageWaitMessage
 		default:
 			next.Phase = runtimev1alpha1.PhaseProgressing
 			condition.Status = metav1.ConditionFalse

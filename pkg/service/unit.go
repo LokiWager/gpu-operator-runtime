@@ -25,21 +25,23 @@ import (
 //
 // The request supplies the user-visible runtime image and pod slice, while the reserved memory and GPU shape still come from stock.
 type CreateGPUUnitRequest struct {
-	OperationID    string                          `json:"operationID"`
-	Name           string                          `json:"name"`
-	Namespace      string                          `json:"namespace,omitempty"`
-	SpecName       string                          `json:"specName"`
-	StockNamespace string                          `json:"stockNamespace,omitempty"`
-	Image          string                          `json:"image"`
-	Template       runtimev1alpha1.GPUUnitTemplate `json:"template,omitempty"`
-	Access         runtimev1alpha1.GPUUnitAccess   `json:"access,omitempty"`
+	OperationID    string                                `json:"operationID"`
+	Name           string                                `json:"name"`
+	Namespace      string                                `json:"namespace,omitempty"`
+	SpecName       string                                `json:"specName"`
+	StockNamespace string                                `json:"stockNamespace,omitempty"`
+	Image          string                                `json:"image"`
+	Template       runtimev1alpha1.GPUUnitTemplate       `json:"template,omitempty"`
+	Access         runtimev1alpha1.GPUUnitAccess         `json:"access,omitempty"`
+	StorageMounts  []runtimev1alpha1.GPUUnitStorageMount `json:"storageMounts,omitempty"`
 }
 
 // UpdateGPUUnitRequest captures the mutable runtime fields for an active unit.
 type UpdateGPUUnitRequest struct {
-	Image    string                          `json:"image,omitempty"`
-	Template runtimev1alpha1.GPUUnitTemplate `json:"template,omitempty"`
-	Access   runtimev1alpha1.GPUUnitAccess   `json:"access,omitempty"`
+	Image         string                                 `json:"image,omitempty"`
+	Template      runtimev1alpha1.GPUUnitTemplate        `json:"template,omitempty"`
+	Access        runtimev1alpha1.GPUUnitAccess          `json:"access,omitempty"`
+	StorageMounts *[]runtimev1alpha1.GPUUnitStorageMount `json:"storageMounts,omitempty"`
 }
 
 // CreateGPUUnit consumes one ready stock unit and creates an active GPUUnit object.
@@ -52,6 +54,9 @@ func (s *Service) CreateGPUUnit(ctx context.Context, req CreateGPUUnitRequest) (
 	if err != nil {
 		return domain.GPUUnitRuntime{}, false, err
 	}
+	if err := s.ensureGPUStoragesExist(ctx, req.Namespace, req.StorageMounts); err != nil {
+		return domain.GPUUnitRuntime{}, false, err
+	}
 
 	s.unitMu.Lock()
 	defer s.unitMu.Unlock()
@@ -60,6 +65,10 @@ func (s *Service) CreateGPUUnit(ctx context.Context, req CreateGPUUnitRequest) (
 		return domain.GPUUnitRuntime{}, false, err
 	} else if ok {
 		return runtimeView, false, nil
+	}
+
+	if err := s.ensureGPUStoragesExclusivelyMountable(ctx, req.Namespace, "", req.StorageMounts); err != nil {
+		return domain.GPUUnitRuntime{}, false, err
 	}
 
 	stock, err := s.claimReadyStockUnit(ctx, req.StockNamespace, req.SpecName, req.OperationID)
@@ -150,6 +159,9 @@ func (s *Service) UpdateGPUUnit(ctx context.Context, namespace, name string, req
 		return domain.GPUUnitRuntime{}, &UnavailableError{Message: "operator client is not available"}
 	}
 
+	s.unitMu.Lock()
+	defer s.unitMu.Unlock()
+
 	req, err := normalizeUpdateGPUUnitRequest(req)
 	if err != nil {
 		return domain.GPUUnitRuntime{}, err
@@ -182,6 +194,15 @@ func (s *Service) UpdateGPUUnit(ctx context.Context, namespace, name string, req
 		}
 	}
 	next.Access = access
+	if req.StorageMounts != nil {
+		if err := s.ensureGPUStoragesExist(ctx, instance.Namespace, *req.StorageMounts); err != nil {
+			return domain.GPUUnitRuntime{}, err
+		}
+		if err := s.ensureGPUStoragesExclusivelyMountable(ctx, instance.Namespace, instance.Name, *req.StorageMounts); err != nil {
+			return domain.GPUUnitRuntime{}, err
+		}
+		next.StorageMounts = append([]runtimev1alpha1.GPUUnitStorageMount(nil), (*req.StorageMounts)...)
+	}
 
 	if reflect.DeepEqual(instance.Spec, next) {
 		return gpuUnitRuntimeFromObject(instance), nil
@@ -272,6 +293,12 @@ func normalizeCreateGPUUnitRequest(req CreateGPUUnitRequest) (CreateGPUUnitReque
 	}
 	req.Access = access
 
+	mounts, err := normalizeGPUUnitStorageMounts(req.StorageMounts)
+	if err != nil {
+		return CreateGPUUnitRequest{}, "", err
+	}
+	req.StorageMounts = mounts
+
 	requestHash, err := hashGPUUnitCreateRequest(req)
 	if err != nil {
 		return CreateGPUUnitRequest{}, "", err
@@ -291,6 +318,13 @@ func normalizeUpdateGPUUnitRequest(req UpdateGPUUnitRequest) (UpdateGPUUnitReque
 
 	req.Access.PrimaryPort = strings.TrimSpace(req.Access.PrimaryPort)
 	req.Access.Scheme = strings.ToLower(strings.TrimSpace(req.Access.Scheme))
+	if req.StorageMounts != nil {
+		mounts, err := normalizeGPUUnitStorageMounts(*req.StorageMounts)
+		if err != nil {
+			return UpdateGPUUnitRequest{}, err
+		}
+		req.StorageMounts = &mounts
+	}
 	return req, nil
 }
 
@@ -452,12 +486,13 @@ func buildActiveUnitFromStock(stock runtimev1alpha1.GPUUnit, req CreateGPUUnitRe
 			},
 		},
 		Spec: runtimev1alpha1.GPUUnitSpec{
-			SpecName: stock.Spec.SpecName,
-			Image:    req.Image,
-			Memory:   stock.Spec.Memory,
-			GPU:      stock.Spec.GPU,
-			Template: req.Template,
-			Access:   req.Access,
+			SpecName:      stock.Spec.SpecName,
+			Image:         req.Image,
+			Memory:        stock.Spec.Memory,
+			GPU:           stock.Spec.GPU,
+			Template:      req.Template,
+			Access:        req.Access,
+			StorageMounts: append([]runtimev1alpha1.GPUUnitStorageMount(nil), req.StorageMounts...),
 		},
 	}
 	return active, nil
@@ -534,6 +569,7 @@ func gpuUnitRuntimeFromObject(instance *runtimev1alpha1.GPUUnit) domain.GPUUnitR
 		GPU:                  instance.Spec.GPU,
 		Template:             instance.Spec.Template,
 		Access:               instance.Spec.Access,
+		StorageMounts:        append([]runtimev1alpha1.GPUUnitStorageMount(nil), instance.Spec.StorageMounts...),
 		Phase:                instance.Status.Phase,
 		ReadyReplicas:        instance.Status.ReadyReplicas,
 		ObservedGeneration:   instance.Status.ObservedGeneration,
