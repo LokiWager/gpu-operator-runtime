@@ -1,0 +1,11 @@
+apiVersion: runtime.lokiwager.io/v1alpha1
+kind: GPUStorage
+metadata:
+  labels:
+    app.kubernetes.io/name: gpu-operator-runtime
+    app.kubernetes.io/managed-by: kustomize
+  name: model-cache
+  namespace: runtime-instance
+spec:
+  size: 20Gi
+  storageClassName: rook-ceph-block
