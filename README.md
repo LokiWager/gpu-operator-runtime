@@ -2,16 +2,17 @@
 
 Teaching-oriented Golang + Kubernetes project for building a GPU runtime control plane.
 
-The current chapter introduces the first persistent storage layer:
+The current chapter turns storage into an operational data path:
 
 - `GPUUnit` still owns runtime lifecycle
-- `GPUStorage` now owns PVC lifecycle
+- `GPUStorage` now owns PVC lifecycle, prepare jobs, and the first accessor service
 - `GPUStorage` defaults to an RBD-backed workspace volume (`rook-ceph-block`)
 - stock still lives in `runtime-stock`
 - active runtime and storage live in `runtime-instance`
-- deleting a runtime no longer implies deleting its data
+- storage can now be seeded from an image or an existing storage object
+- failed prepare jobs now surface recovery state instead of disappearing into pod logs
 
-The operator API seeds stock units into `runtime-stock`. The runtime API consumes one ready stock unit and creates an active `GPUUnit`. The storage API creates RBD-backed `GPUStorage` objects, and active units mount them explicitly through `storageMounts`.
+The operator API seeds stock units into `runtime-stock`. The runtime API consumes one ready stock unit and creates an active `GPUUnit`. The storage API now creates RBD-backed `GPUStorage` objects, tracks controller-owned prepare jobs, and can publish the first built-in accessor path through a storage-owned service.
 
 ## Prerequisites
 
@@ -138,7 +139,7 @@ kubectl get gpuunits -n runtime-stock
 kubectl get gpuunit -n runtime-stock
 ```
 
-### 2. Create persistent storage
+### 2. Create prepared storage
 
 ```bash
 curl -s -X POST http://127.0.0.1:8080/api/v1/gpu-storages \
@@ -147,16 +148,26 @@ curl -s -X POST http://127.0.0.1:8080/api/v1/gpu-storages \
     "name":"model-cache",
     "namespace":"runtime-instance",
     "size":"20Gi",
-    "storageClassName":"rook-ceph-block"
+    "storageClassName":"rook-ceph-block",
+    "prepare":{
+      "fromImage":"busybox:1.36",
+      "command":["sh","-c"],
+      "args":["mkdir -p /workspace/model && echo seeded > /workspace/model/README.txt"]
+    },
+    "accessor":{
+      "enabled":true
+    }
   }' | jq
 ```
 
-Inspect storage:
+Inspect storage, the prepare job, and the accessor:
 
 ```bash
 curl -s 'http://127.0.0.1:8080/api/v1/gpu-storages/model-cache?namespace=runtime-instance' | jq
 kubectl get gpustorages -n runtime-instance
 kubectl get pvc -n runtime-instance
+kubectl get jobs -n runtime-instance -l runtime.lokiwager.io/storage=model-cache
+kubectl get deploy,svc -n runtime-instance | grep storage-accessor-model-cache
 ```
 
 ### 3. Consume one ready stock unit into an active runtime
@@ -208,6 +219,19 @@ curl -s -X PUT 'http://127.0.0.1:8080/api/v1/gpu-storages/model-cache?namespace=
   }' | jq
 ```
 
+Disable the accessor later:
+
+```bash
+curl -s -X PUT 'http://127.0.0.1:8080/api/v1/gpu-storages/model-cache?namespace=runtime-instance' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "size":"40Gi",
+    "accessor":{
+      "enabled":false
+    }
+  }' | jq
+```
+
 Move the mount path on the runtime:
 
 ```bash
@@ -239,6 +263,12 @@ Delete the storage after it is no longer mounted:
 curl -i -X DELETE 'http://127.0.0.1:8080/api/v1/gpu-storages/model-cache?namespace=runtime-instance'
 ```
 
+If a prepare job fails and you want the controller to start a new attempt:
+
+```bash
+curl -s -X POST 'http://127.0.0.1:8080/api/v1/gpu-storages/model-cache/recover?namespace=runtime-instance' | jq
+```
+
 ## Operational notes
 
 - Stock replenishment is still explicit. If you want more stock, call `POST /api/v1/operator/stock-units` again.
@@ -248,6 +278,8 @@ curl -i -X DELETE 'http://127.0.0.1:8080/api/v1/gpu-storages/model-cache?namespa
 - `GPUUnit` mounts only reference storage by name and mount path. PVC naming, claim lifecycle, and status tracking stay controller-owned.
 - The current storage path is intentionally RBD-shaped: one active runtime owns one workspace volume. Shared filesystem use cases belong to a later CephFS-style path, not this chapter.
 - Reusing one `GPUStorage` from two active `GPUUnit` objects is rejected by the API with `409 Conflict`.
+- Storage data preparation is asynchronous and controller-owned. The API persists the contract immediately, and `GPUStorage.status` reports prepare job and recovery state.
+- The first built-in storage accessor is intentionally small: a controller-owned read-only HTTP path for browsing prepared data, not a full data gateway.
 
 ## Quality gates
 
@@ -271,7 +303,7 @@ make ci
 - `api/v1alpha1`: `GPUUnit` and `GPUStorage` API schemas
 - `internal/controller`: runtime and storage reconcilers plus workload helper logic
 - `pkg/api`: Echo HTTP handlers and Swagger annotations
-- `pkg/service`: stock seeding, stock consumption, storage CRUD, idempotency, and API orchestration
+- `pkg/service`: stock seeding, stock consumption, storage CRUD, recovery actions, idempotency, and API orchestration
 - `pkg/jobs`: periodic status logging
 - `config/`: generated CRDs, RBAC, and sample manifests
 

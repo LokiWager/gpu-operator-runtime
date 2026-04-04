@@ -9,3 +9,12 @@ metadata:
 spec:
   size: 20Gi
   storageClassName: rook-ceph-block
+  prepare:
+    fromImage: busybox:1.36
+    command:
+      - sh
+      - -c
+    args:
+      - mkdir -p /workspace/model && echo seeded > /workspace/model/README.txt
+  accessor:
+    enabled: true

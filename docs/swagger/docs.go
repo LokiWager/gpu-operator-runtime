@@ -23,7 +23,7 @@ const docTemplate = `{
     "paths": {
         "/gpu-storages": {
             "get": {
-                "description": "List RBD-backed GPU storage resources, optionally filtered by namespace.",
+                "description": "List RBD-backed GPU storage resources, including prepare-job and accessor status, optionally filtered by namespace.",
                 "produces": [
                     "application/json"
                 ],
@@ -67,7 +67,7 @@ const docTemplate = `{
                 }
             },
             "post": {
-                "description": "Persist a GPUStorage resource. By default it targets the rook-ceph-block RBD StorageClass, and the controller reconciles the backing PersistentVolumeClaim asynchronously.",
+                "description": "Persist a GPUStorage resource. By default it targets the rook-ceph-block RBD StorageClass, and the controller reconciles the backing PersistentVolumeClaim, prepare job, and optional accessor asynchronously.",
                 "consumes": [
                     "application/json"
                 ],
@@ -176,7 +176,7 @@ const docTemplate = `{
                 }
             },
             "put": {
-                "description": "Update the mutable storage fields on a GPUStorage resource. This chapter only allows storage expansion.",
+                "description": "Update the mutable storage fields on a GPUStorage resource. This chapter allows storage expansion and accessor toggling, while prepare workflows stay immutable and recoverable through a dedicated action.",
                 "consumes": [
                     "application/json"
                 ],
@@ -283,6 +283,59 @@ const docTemplate = `{
                     },
                     "409": {
                         "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/gpu-storages/{name}/recover": {
+            "post": {
+                "description": "Request a new prepare attempt for one GPUStorage resource after a failed data job.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "storage"
+                ],
+                "summary": "Recover a GPU storage",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "GPU storage name",
+                        "name": "name",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Namespace filter",
+                        "name": "namespace",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.GPUStorageResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
                         "schema": {
                             "$ref": "#/definitions/api.ErrorResponse"
                         }
@@ -786,6 +839,12 @@ const docTemplate = `{
         "domain.GPUStorageRuntime": {
             "type": "object",
             "properties": {
+                "accessor": {
+                    "$ref": "#/definitions/v1alpha1.GPUStorageAccessorSpec"
+                },
+                "accessorStatus": {
+                    "$ref": "#/definitions/v1alpha1.GPUStorageAccessorStatus"
+                },
                 "capacity": {
                     "type": "string"
                 },
@@ -815,6 +874,12 @@ const docTemplate = `{
                 },
                 "phase": {
                     "type": "string"
+                },
+                "prepare": {
+                    "$ref": "#/definitions/v1alpha1.GPUStoragePrepareSpec"
+                },
+                "prepareStatus": {
+                    "$ref": "#/definitions/v1alpha1.GPUStoragePrepareStatus"
                 },
                 "reason": {
                     "type": "string"
@@ -971,11 +1036,17 @@ const docTemplate = `{
         "service.CreateGPUStorageRequest": {
             "type": "object",
             "properties": {
+                "accessor": {
+                    "$ref": "#/definitions/v1alpha1.GPUStorageAccessorSpec"
+                },
                 "name": {
                     "type": "string"
                 },
                 "namespace": {
                     "type": "string"
+                },
+                "prepare": {
+                    "$ref": "#/definitions/v1alpha1.GPUStoragePrepareSpec"
                 },
                 "size": {
                     "type": "string"
@@ -1043,6 +1114,9 @@ const docTemplate = `{
         "service.UpdateGPUStorageRequest": {
             "type": "object",
             "properties": {
+                "accessor": {
+                    "$ref": "#/definitions/v1alpha1.GPUStorageAccessorSpec"
+                },
                 "size": {
                     "type": "string"
                 }
@@ -1080,6 +1154,73 @@ const docTemplate = `{
                 "ProtocolUDP",
                 "ProtocolSCTP"
             ]
+        },
+        "v1alpha1.GPUStorageAccessorSpec": {
+            "type": "object",
+            "properties": {
+                "enabled": {
+                    "description": "Enabled turns on the built-in storage accessor deployment and service.",
+                    "type": "boolean"
+                }
+            }
+        },
+        "v1alpha1.GPUStorageAccessorStatus": {
+            "type": "object",
+            "properties": {
+                "accessURL": {
+                    "type": "string"
+                },
+                "phase": {
+                    "type": "string"
+                },
+                "serviceName": {
+                    "type": "string"
+                }
+            }
+        },
+        "v1alpha1.GPUStoragePrepareSpec": {
+            "type": "object",
+            "properties": {
+                "args": {
+                    "description": "Args overrides the container args used by the data preparation job.",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "command": {
+                    "description": "Command overrides the container command used by the data preparation job.",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "fromImage": {
+                    "description": "FromImage is the image used by the data preparation job.",
+                    "type": "string"
+                },
+                "fromStorageName": {
+                    "description": "FromStorageName copies data from another storage object in the same namespace.",
+                    "type": "string"
+                }
+            }
+        },
+        "v1alpha1.GPUStoragePrepareStatus": {
+            "type": "object",
+            "properties": {
+                "jobName": {
+                    "type": "string"
+                },
+                "observedDigest": {
+                    "type": "string"
+                },
+                "phase": {
+                    "type": "string"
+                },
+                "recoveryPhase": {
+                    "type": "string"
+                }
+            }
         },
         "v1alpha1.GPUUnitAccess": {
             "type": "object",

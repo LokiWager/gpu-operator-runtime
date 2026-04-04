@@ -54,6 +54,40 @@ spec:
             description: GPUStorageSpec defines the desired state of one persistent
               storage object.
             properties:
+              accessor:
+                description: Accessor controls the first built-in path for browsing
+                  storage through a controller-owned service.
+                properties:
+                  enabled:
+                    description: Enabled turns on the built-in storage accessor deployment
+                      and service.
+                    type: boolean
+                type: object
+              prepare:
+                description: Prepare describes how the platform should seed the storage
+                  contents after the PVC is ready.
+                properties:
+                  args:
+                    description: Args overrides the container args used by the data
+                      preparation job.
+                    items:
+                      type: string
+                    type: array
+                  command:
+                    description: Command overrides the container command used by the
+                      data preparation job.
+                    items:
+                      type: string
+                    type: array
+                  fromImage:
+                    description: FromImage is the image used by the data preparation
+                      job.
+                    type: string
+                  fromStorageName:
+                    description: FromStorageName copies data from another storage
+                      object in the same namespace.
+                    type: string
+                type: object
               size:
                 description: Size is the requested persistent volume size, for example
                   "20Gi".
@@ -71,6 +105,17 @@ spec:
             description: GPUStorageStatus defines the observed state of one persistent
               storage object.
             properties:
+              accessor:
+                description: GPUStorageAccessorStatus reports the current accessor
+                  state for one storage object.
+                properties:
+                  accessURL:
+                    type: string
+                  phase:
+                    type: string
+                  serviceName:
+                    type: string
+                type: object
               capacity:
                 type: string
               claimName:
@@ -139,6 +184,19 @@ spec:
                 type: integer
               phase:
                 type: string
+              prepare:
+                description: GPUStoragePrepareStatus reports the current data-preparation
+                  state for one storage object.
+                properties:
+                  jobName:
+                    type: string
+                  observedDigest:
+                    type: string
+                  phase:
+                    type: string
+                  recoveryPhase:
+                    type: string
+                type: object
             type: object
         type: object
     served: true

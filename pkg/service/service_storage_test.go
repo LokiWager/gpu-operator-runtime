@@ -18,6 +18,14 @@ func TestService_GPUStorageCRUD(t *testing.T) {
 	created, err := svc.CreateGPUStorage(ctx, CreateGPUStorageRequest{
 		Name: "model-cache",
 		Size: "20Gi",
+		Prepare: runtimev1alpha1.GPUStoragePrepareSpec{
+			FromImage: "busybox:1.36",
+			Command:   []string{"sh", "-c"},
+			Args:      []string{"echo seeded > /workspace/README.txt"},
+		},
+		Accessor: runtimev1alpha1.GPUStorageAccessorSpec{
+			Enabled: true,
+		},
 	})
 	if err != nil {
 		t.Fatalf("create gpu storage error: %v", err)
@@ -31,13 +39,27 @@ func TestService_GPUStorageCRUD(t *testing.T) {
 	if created.StorageClassName != runtimev1alpha1.DefaultGPUStorageClassName {
 		t.Fatalf("expected default storage class %s, got %s", runtimev1alpha1.DefaultGPUStorageClassName, created.StorageClassName)
 	}
+	if created.Prepare.FromImage != "busybox:1.36" {
+		t.Fatalf("expected prepare image to be preserved, got %+v", created.Prepare)
+	}
+	if !created.Accessor.Enabled {
+		t.Fatalf("expected accessor to be enabled")
+	}
 
-	updated, err := svc.UpdateGPUStorage(ctx, created.Namespace, created.Name, UpdateGPUStorageRequest{Size: "40Gi"})
+	updated, err := svc.UpdateGPUStorage(ctx, created.Namespace, created.Name, UpdateGPUStorageRequest{
+		Size: "40Gi",
+		Accessor: &runtimev1alpha1.GPUStorageAccessorSpec{
+			Enabled: false,
+		},
+	})
 	if err != nil {
 		t.Fatalf("update gpu storage error: %v", err)
 	}
 	if updated.Size != "40Gi" {
 		t.Fatalf("expected updated size 40Gi, got %s", updated.Size)
+	}
+	if updated.Accessor.Enabled {
+		t.Fatalf("expected accessor to be disabled after update")
 	}
 
 	list, err := svc.ListGPUStorages(ctx, created.Namespace)
@@ -89,6 +111,67 @@ func TestService_DeleteGPUStorage_RejectsMountedStorage(t *testing.T) {
 	}
 }
 
+func TestService_RecoverGPUStorage(t *testing.T) {
+	svc, ctx, cancel := newOperatorService(t)
+	defer cancel()
+
+	seedGPUStorage(t, ctx, svc, gpuStorageSeedOptions{
+		name:      "model-cache",
+		namespace: runtimev1alpha1.DefaultInstanceNamespace,
+		size:      "20Gi",
+		phase:     runtimev1alpha1.StoragePhaseFailed,
+		prepare: runtimev1alpha1.GPUStoragePrepareSpec{
+			FromImage: "busybox:1.36",
+			Command:   []string{"sh", "-c"},
+			Args:      []string{"echo seeded > /workspace/README.txt"},
+		},
+		prepareStatus: runtimev1alpha1.GPUStoragePrepareStatus{
+			Phase:          runtimev1alpha1.StoragePreparePhaseFailed,
+			JobName:        "storage-prepare-model-cache-old",
+			ObservedDigest: "old",
+			RecoveryPhase:  runtimev1alpha1.StorageRecoveryPhaseRequired,
+		},
+	})
+
+	recovered, err := svc.RecoverGPUStorage(ctx, runtimev1alpha1.DefaultInstanceNamespace, "model-cache")
+	if err != nil {
+		t.Fatalf("recover gpu storage error: %v", err)
+	}
+	if recovered.PrepareStatus.Phase != runtimev1alpha1.StoragePreparePhaseFailed {
+		t.Fatalf("expected existing prepare status to be preserved immediately, got %+v", recovered.PrepareStatus)
+	}
+
+	var stored runtimev1alpha1.GPUStorage
+	if err := svc.operator.Get(ctx, types.NamespacedName{Namespace: runtimev1alpha1.DefaultInstanceNamespace, Name: "model-cache"}, &stored); err != nil {
+		t.Fatalf("get recovered storage error: %v", err)
+	}
+	if stored.Annotations[runtimev1alpha1.AnnotationStorageRecoveryNonce] == "" {
+		t.Fatalf("expected recovery annotation to be written")
+	}
+}
+
+func TestService_RecoverGPUStorage_RejectsStorageWithoutPrepare(t *testing.T) {
+	svc, ctx, cancel := newOperatorService(t)
+	defer cancel()
+
+	seedGPUStorage(t, ctx, svc, gpuStorageSeedOptions{
+		name:      "model-cache",
+		namespace: runtimev1alpha1.DefaultInstanceNamespace,
+		size:      "20Gi",
+		phase:     runtimev1alpha1.StoragePhaseReady,
+	})
+
+	_, err := svc.RecoverGPUStorage(ctx, runtimev1alpha1.DefaultInstanceNamespace, "model-cache")
+	if err == nil {
+		t.Fatalf("expected recover validation error")
+	}
+
+	var validationErr *ValidationError
+	if !errors.As(err, &validationErr) {
+		t.Fatalf("expected validation error, got %T", err)
+	}
+}
+
 type gpuStorageSeedOptions struct {
 	name             string
 	namespace        string
@@ -96,6 +179,10 @@ type gpuStorageSeedOptions struct {
 	storageClassName string
 	phase            string
 	capacity         string
+	prepare          runtimev1alpha1.GPUStoragePrepareSpec
+	accessor         runtimev1alpha1.GPUStorageAccessorSpec
+	prepareStatus    runtimev1alpha1.GPUStoragePrepareStatus
+	accessorStatus   runtimev1alpha1.GPUStorageAccessorStatus
 }
 
 func seedGPUStorage(t *testing.T, ctx context.Context, svc *Service, opts gpuStorageSeedOptions) {
@@ -126,10 +213,14 @@ func seedGPUStorage(t *testing.T, ctx context.Context, svc *Service, opts gpuSto
 		Spec: runtimev1alpha1.GPUStorageSpec{
 			Size:             size,
 			StorageClassName: opts.storageClassName,
+			Prepare:          opts.prepare,
+			Accessor:         opts.accessor,
 		},
 		Status: runtimev1alpha1.GPUStorageStatus{
 			ClaimName: opts.name,
 			Phase:     phase,
+			Prepare:   opts.prepareStatus,
+			Accessor:  opts.accessorStatus,
 			Conditions: []metav1.Condition{{
 				Type:    runtimev1alpha1.ConditionReady,
 				Status:  metav1.ConditionFalse,

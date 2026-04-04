@@ -59,6 +59,7 @@ func (s *Server) routes() {
 	s.echo.POST("/api/v1/gpu-storages", s.handleCreateGPUStorage)
 	s.echo.GET("/api/v1/gpu-storages/:name", s.handleGetGPUStorage)
 	s.echo.PUT("/api/v1/gpu-storages/:name", s.handleUpdateGPUStorage)
+	s.echo.POST("/api/v1/gpu-storages/:name/recover", s.handleRecoverGPUStorage)
 	s.echo.DELETE("/api/v1/gpu-storages/:name", s.handleDeleteGPUStorage)
 	s.echo.GET("/api/v1/gpu-units", s.handleListGPUUnits)
 	s.echo.POST("/api/v1/gpu-units", s.handleCreateGPUUnit)
@@ -71,7 +72,7 @@ func (s *Server) routes() {
 
 // handleListGPUStorages godoc
 // @Summary List GPU storages
-// @Description List RBD-backed GPU storage resources, optionally filtered by namespace.
+// @Description List RBD-backed GPU storage resources, including prepare-job and accessor status, optionally filtered by namespace.
 // @Tags storage
 // @Produce json
 // @Param namespace query string false "Namespace filter"
@@ -91,7 +92,7 @@ func (s *Server) handleListGPUStorages(c echo.Context) error {
 
 // handleCreateGPUStorage godoc
 // @Summary Create a GPU storage
-// @Description Persist a GPUStorage resource. By default it targets the rook-ceph-block RBD StorageClass, and the controller reconciles the backing PersistentVolumeClaim asynchronously.
+// @Description Persist a GPUStorage resource. By default it targets the rook-ceph-block RBD StorageClass, and the controller reconciles the backing PersistentVolumeClaim, prepare job, and optional accessor asynchronously.
 // @Tags storage
 // @Accept json
 // @Produce json
@@ -137,7 +138,7 @@ func (s *Server) handleGetGPUStorage(c echo.Context) error {
 
 // handleUpdateGPUStorage godoc
 // @Summary Update a GPU storage
-// @Description Update the mutable storage fields on a GPUStorage resource. This chapter only allows storage expansion.
+// @Description Update the mutable storage fields on a GPUStorage resource. This chapter allows storage expansion and accessor toggling, while prepare workflows stay immutable and recoverable through a dedicated action.
 // @Tags storage
 // @Accept json
 // @Produce json
@@ -158,6 +159,26 @@ func (s *Server) handleUpdateGPUStorage(c echo.Context) error {
 	storage, err := s.service.UpdateGPUStorage(c.Request().Context(), c.QueryParam("namespace"), c.Param("name"), req)
 	if err != nil {
 		return writeServiceError(c, err, "update_gpustorage_failed")
+	}
+	return writeData(c, http.StatusOK, storage)
+}
+
+// handleRecoverGPUStorage godoc
+// @Summary Recover a GPU storage
+// @Description Request a new prepare attempt for one GPUStorage resource after a failed data job.
+// @Tags storage
+// @Produce json
+// @Param name path string true "GPU storage name"
+// @Param namespace query string false "Namespace filter"
+// @Success 200 {object} GPUStorageResponse
+// @Failure 400 {object} ErrorResponse
+// @Failure 404 {object} ErrorResponse
+// @Failure 500 {object} ErrorResponse
+// @Router /gpu-storages/{name}/recover [post]
+func (s *Server) handleRecoverGPUStorage(c echo.Context) error {
+	storage, err := s.service.RecoverGPUStorage(c.Request().Context(), c.QueryParam("namespace"), c.Param("name"))
+	if err != nil {
+		return writeServiceError(c, err, "recover_gpustorage_failed")
 	}
 	return writeData(c, http.StatusOK, storage)
 }

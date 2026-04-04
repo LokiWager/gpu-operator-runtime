@@ -219,7 +219,7 @@ func TestServer_GPUStorageCrud(t *testing.T) {
 	h, _, operatorClient, cancel := newOperatorBackedHandler(t)
 	defer cancel()
 
-	createReq := httptest.NewRequest(http.MethodPost, "/api/v1/gpu-storages", strings.NewReader(`{"name":"model-cache","size":"20Gi"}`))
+	createReq := httptest.NewRequest(http.MethodPost, "/api/v1/gpu-storages", strings.NewReader(`{"name":"model-cache","size":"20Gi","prepare":{"fromImage":"busybox:1.36","command":["sh","-c"],"args":["echo seeded > /workspace/README.txt"]},"accessor":{"enabled":true}}`))
 	createReq.Header.Set("Content-Type", "application/json")
 	createW := httptest.NewRecorder()
 	h.ServeHTTP(createW, createReq)
@@ -249,6 +249,13 @@ func TestServer_GPUStorageCrud(t *testing.T) {
 	h.ServeHTTP(updateW, updateReq)
 	if updateW.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d body=%s", updateW.Code, updateW.Body.String())
+	}
+
+	recoverReq := httptest.NewRequest(http.MethodPost, "/api/v1/gpu-storages/model-cache/recover?namespace=runtime-instance", nil)
+	recoverW := httptest.NewRecorder()
+	h.ServeHTTP(recoverW, recoverReq)
+	if recoverW.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", recoverW.Code, recoverW.Body.String())
 	}
 
 	deleteReq := httptest.NewRequest(http.MethodDelete, "/api/v1/gpu-storages/model-cache?namespace=runtime-instance", nil)

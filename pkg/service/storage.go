@@ -5,13 +5,13 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/validation"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 
 	runtimev1alpha1 "github.com/loki/gpu-operator-runtime/api/v1alpha1"
@@ -20,16 +20,22 @@ import (
 
 // CreateGPUStorageRequest asks the service to persist a new RBD-backed workspace storage resource.
 type CreateGPUStorageRequest struct {
-	Name             string `json:"name"`
-	Namespace        string `json:"namespace,omitempty"`
-	Size             string `json:"size"`
-	StorageClassName string `json:"storageClassName,omitempty"`
+	Name             string                                 `json:"name"`
+	Namespace        string                                 `json:"namespace,omitempty"`
+	Size             string                                 `json:"size"`
+	StorageClassName string                                 `json:"storageClassName,omitempty"`
+	Prepare          runtimev1alpha1.GPUStoragePrepareSpec  `json:"prepare,omitempty"`
+	Accessor         runtimev1alpha1.GPUStorageAccessorSpec `json:"accessor,omitempty"`
 }
 
 // UpdateGPUStorageRequest captures the mutable storage fields.
 type UpdateGPUStorageRequest struct {
-	Size string `json:"size"`
+	Size     string                                  `json:"size"`
+	Accessor *runtimev1alpha1.GPUStorageAccessorSpec `json:"accessor,omitempty"`
 }
+
+// RecoverGPUStorageRequest records one recovery action against a failed storage prepare workflow.
+type RecoverGPUStorageRequest struct{}
 
 // CreateGPUStorage persists a new GPUStorage object and lets the controller bind its PVC.
 func (s *Service) CreateGPUStorage(ctx context.Context, req CreateGPUStorageRequest) (domain.GPUStorageRuntime, error) {
@@ -39,6 +45,9 @@ func (s *Service) CreateGPUStorage(ctx context.Context, req CreateGPUStorageRequ
 
 	req, err := normalizeCreateGPUStorageRequest(req)
 	if err != nil {
+		return domain.GPUStorageRuntime{}, err
+	}
+	if err := s.ensureGPUStoragePrepareSourcesExist(ctx, req.Namespace, req.Name, req.Prepare); err != nil {
 		return domain.GPUStorageRuntime{}, err
 	}
 
@@ -70,6 +79,8 @@ func (s *Service) CreateGPUStorage(ctx context.Context, req CreateGPUStorageRequ
 		Spec: runtimev1alpha1.GPUStorageSpec{
 			Size:             req.Size,
 			StorageClassName: req.StorageClassName,
+			Prepare:          req.Prepare,
+			Accessor:         req.Accessor,
 		},
 	}
 	if err := s.operator.Create(ctx, storage); err != nil {
@@ -155,12 +166,18 @@ func (s *Service) UpdateGPUStorage(ctx context.Context, namespace, name string, 
 	if err != nil {
 		return domain.GPUStorageRuntime{}, err
 	}
+	accessorChanged := applyGPUStorageAccessorSpec(storage, req.Accessor)
 	if nextQty.Cmp(currentQty) < 0 {
 		return domain.GPUStorageRuntime{}, &ValidationError{
 			Message: fmt.Sprintf("size %q cannot be smaller than current size %q", req.Size, storage.Spec.Size),
 		}
 	}
 	if nextQty.Cmp(currentQty) == 0 {
+		if accessorChanged {
+			if err := s.operator.Update(ctx, storage); err != nil {
+				return domain.GPUStorageRuntime{}, err
+			}
+		}
 		mountedBy, indexErr := s.storageMountIndex(ctx, storage.Namespace)
 		if indexErr != nil {
 			return domain.GPUStorageRuntime{}, indexErr
@@ -169,6 +186,37 @@ func (s *Service) UpdateGPUStorage(ctx context.Context, namespace, name string, 
 	}
 
 	storage.Spec.Size = nextQty.String()
+	if err := s.operator.Update(ctx, storage); err != nil {
+		return domain.GPUStorageRuntime{}, err
+	}
+
+	mountedBy, err := s.storageMountIndex(ctx, storage.Namespace)
+	if err != nil {
+		return domain.GPUStorageRuntime{}, err
+	}
+	return s.storageRuntimeFromObject(ctx, storage, mountedBy)
+}
+
+// RecoverGPUStorage requests a new prepare attempt for one storage object without mutating the prepare contract itself.
+func (s *Service) RecoverGPUStorage(ctx context.Context, namespace, name string) (domain.GPUStorageRuntime, error) {
+	if s.operator == nil {
+		return domain.GPUStorageRuntime{}, &UnavailableError{Message: "operator client is not available"}
+	}
+
+	storage, err := s.getGPUStorageObject(ctx, namespace, name)
+	if err != nil {
+		return domain.GPUStorageRuntime{}, err
+	}
+	if isZeroGPUStoragePrepare(storage.Spec.Prepare) {
+		return domain.GPUStorageRuntime{}, &ValidationError{
+			Message: fmt.Sprintf("gpu storage %s/%s has no prepare workflow to recover", storage.Namespace, storage.Name),
+		}
+	}
+
+	if storage.Annotations == nil {
+		storage.Annotations = map[string]string{}
+	}
+	storage.Annotations[runtimev1alpha1.AnnotationStorageRecoveryNonce] = metav1.Now().UTC().Format(time.RFC3339Nano)
 	if err := s.operator.Update(ctx, storage); err != nil {
 		return domain.GPUStorageRuntime{}, err
 	}
@@ -205,64 +253,50 @@ func (s *Service) DeleteGPUStorage(ctx context.Context, namespace, name string) 
 }
 
 func normalizeCreateGPUStorageRequest(req CreateGPUStorageRequest) (CreateGPUStorageRequest, error) {
-	req.Name = strings.ToLower(strings.TrimSpace(req.Name))
-	if req.Name == "" {
-		return CreateGPUStorageRequest{}, &ValidationError{Message: "name is required"}
-	}
-	if errs := validation.IsDNS1123Subdomain(req.Name); len(errs) > 0 {
-		return CreateGPUStorageRequest{}, &ValidationError{
-			Message: fmt.Sprintf("name %q is invalid: %s", req.Name, strings.Join(errs, ", ")),
-		}
-	}
-
-	req.Namespace = strings.TrimSpace(req.Namespace)
-	if req.Namespace == "" {
-		req.Namespace = runtimev1alpha1.DefaultInstanceNamespace
-	}
-	if errs := validation.IsDNS1123Label(req.Namespace); len(errs) > 0 {
-		return CreateGPUStorageRequest{}, &ValidationError{
-			Message: fmt.Sprintf("namespace %q is invalid: %s", req.Namespace, strings.Join(errs, ", ")),
-		}
-	}
-	if req.Namespace == runtimev1alpha1.DefaultStockNamespace {
-		return CreateGPUStorageRequest{}, &ValidationError{
-			Message: fmt.Sprintf("namespace %q cannot be used for persistent storage", req.Namespace),
-		}
-	}
-
-	req.Size = strings.TrimSpace(req.Size)
-	if req.Size == "" {
-		return CreateGPUStorageRequest{}, &ValidationError{Message: "size is required"}
-	}
-	qty, err := resource.ParseQuantity(req.Size)
+	name, err := normalizeGPUStorageName(req.Name)
 	if err != nil {
-		return CreateGPUStorageRequest{}, &ValidationError{Message: fmt.Sprintf("size %q is invalid: %v", req.Size, err)}
+		return CreateGPUStorageRequest{}, err
 	}
-	req.Size = qty.String()
+	req.Name = name
 
-	req.StorageClassName = strings.TrimSpace(req.StorageClassName)
-	if req.StorageClassName == "" {
-		req.StorageClassName = runtimev1alpha1.DefaultGPUStorageClassName
+	namespace, err := normalizeGPUStorageNamespace(req.Namespace)
+	if err != nil {
+		return CreateGPUStorageRequest{}, err
 	}
-	if errs := validation.IsDNS1123Subdomain(req.StorageClassName); len(errs) > 0 {
-		return CreateGPUStorageRequest{}, &ValidationError{
-			Message: fmt.Sprintf("storageClassName %q is invalid: %s", req.StorageClassName, strings.Join(errs, ", ")),
-		}
+	req.Namespace = namespace
+
+	size, _, err := normalizeGPUStorageSize(req.Size)
+	if err != nil {
+		return CreateGPUStorageRequest{}, err
 	}
+	req.Size = size
+
+	storageClassName, err := normalizeGPUStorageClassName(req.StorageClassName)
+	if err != nil {
+		return CreateGPUStorageRequest{}, err
+	}
+	req.StorageClassName = storageClassName
+
+	prepare, err := normalizeGPUStoragePrepare(req.Prepare)
+	if err != nil {
+		return CreateGPUStorageRequest{}, err
+	}
+	req.Prepare = prepare
+	req.Accessor = normalizeGPUStorageAccessor(req.Accessor)
 
 	return req, nil
 }
 
 func normalizeUpdateGPUStorageRequest(req UpdateGPUStorageRequest) (UpdateGPUStorageRequest, resource.Quantity, error) {
-	req.Size = strings.TrimSpace(req.Size)
-	if req.Size == "" {
-		return UpdateGPUStorageRequest{}, resource.Quantity{}, &ValidationError{Message: "size is required"}
-	}
-	qty, err := resource.ParseQuantity(req.Size)
+	size, qty, err := normalizeGPUStorageSize(req.Size)
 	if err != nil {
-		return UpdateGPUStorageRequest{}, resource.Quantity{}, &ValidationError{Message: fmt.Sprintf("size %q is invalid: %v", req.Size, err)}
+		return UpdateGPUStorageRequest{}, resource.Quantity{}, err
 	}
-	req.Size = qty.String()
+	req.Size = size
+	if req.Accessor != nil {
+		normalized := normalizeGPUStorageAccessor(*req.Accessor)
+		req.Accessor = &normalized
+	}
 	return req, qty, nil
 }
 
@@ -306,10 +340,14 @@ func gpuStorageRuntimeFromObject(storage *runtimev1alpha1.GPUStorage, mountedBy 
 		Namespace:          storage.Namespace,
 		Size:               storage.Spec.Size,
 		StorageClassName:   effectiveGPUStorageClassName(storage.Spec.StorageClassName),
+		Prepare:            storage.Spec.Prepare,
+		Accessor:           storage.Spec.Accessor,
 		ClaimName:          storage.Status.ClaimName,
 		Capacity:           storage.Status.Capacity,
 		MountedBy:          append([]string(nil), mountedBy...),
 		Phase:              storage.Status.Phase,
+		PrepareStatus:      storage.Status.Prepare,
+		AccessorStatus:     storage.Status.Accessor,
 		ObservedGeneration: storage.Status.ObservedGeneration,
 		LastSyncTime:       storage.Status.LastSyncTime.Time,
 		Reason:             reason,
@@ -327,9 +365,17 @@ func effectiveGPUStorageClassName(raw string) string {
 	return raw
 }
 
+func applyGPUStorageAccessorSpec(storage *runtimev1alpha1.GPUStorage, accessor *runtimev1alpha1.GPUStorageAccessorSpec) bool {
+	if accessor == nil || storage.Spec.Accessor == *accessor {
+		return false
+	}
+	storage.Spec.Accessor = *accessor
+	return true
+}
+
 func (s *Service) storageMountIndex(ctx context.Context, namespace string) (map[string][]string, error) {
 	var units runtimev1alpha1.GPUUnitList
-	opts := []ctrlclient.ListOption{}
+	var opts []ctrlclient.ListOption
 	if namespace != metav1.NamespaceAll {
 		opts = append(opts, ctrlclient.InNamespace(namespace))
 	}
@@ -373,6 +419,25 @@ func (s *Service) ensureGPUStoragesExist(ctx context.Context, namespace string, 
 		if err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func (s *Service) ensureGPUStoragePrepareSourcesExist(ctx context.Context, namespace, storageName string, prepare runtimev1alpha1.GPUStoragePrepareSpec) error {
+	if prepare.FromStorageName == "" {
+		return nil
+	}
+	if prepare.FromStorageName == storageName {
+		return &ValidationError{Message: "prepare.fromStorageName cannot point to the same storage object"}
+	}
+
+	var source runtimev1alpha1.GPUStorage
+	err := s.operator.Get(ctx, types.NamespacedName{Namespace: namespace, Name: prepare.FromStorageName}, &source)
+	if apierrors.IsNotFound(err) {
+		return &NotFoundError{Message: fmt.Sprintf("gpu storage %s/%s not found", namespace, prepare.FromStorageName)}
+	}
+	if err != nil {
+		return err
 	}
 	return nil
 }

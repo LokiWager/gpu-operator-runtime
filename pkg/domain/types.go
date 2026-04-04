@@ -66,16 +66,20 @@ type GPUUnitRuntime struct {
 
 // GPUStorageRuntime is the API-facing view of a GPUStorage object.
 type GPUStorageRuntime struct {
-	Name               string    `json:"name"`
-	Namespace          string    `json:"namespace"`
-	Size               string    `json:"size"`
-	StorageClassName   string    `json:"storageClassName,omitempty"`
-	ClaimName          string    `json:"claimName,omitempty"`
-	Capacity           string    `json:"capacity,omitempty"`
-	MountedBy          []string  `json:"mountedBy,omitempty"`
-	Phase              string    `json:"phase"`
-	ObservedGeneration int64     `json:"observedGeneration"`
-	LastSyncTime       time.Time `json:"lastSyncTime,omitempty"`
-	Reason             string    `json:"reason,omitempty"`
-	Message            string    `json:"message,omitempty"`
+	Name               string                                   `json:"name"`
+	Namespace          string                                   `json:"namespace"`
+	Size               string                                   `json:"size"`
+	StorageClassName   string                                   `json:"storageClassName,omitempty"`
+	Prepare            runtimev1alpha1.GPUStoragePrepareSpec    `json:"prepare,omitempty"`
+	Accessor           runtimev1alpha1.GPUStorageAccessorSpec   `json:"accessor,omitempty"`
+	ClaimName          string                                   `json:"claimName,omitempty"`
+	Capacity           string                                   `json:"capacity,omitempty"`
+	MountedBy          []string                                 `json:"mountedBy,omitempty"`
+	Phase              string                                   `json:"phase"`
+	PrepareStatus      runtimev1alpha1.GPUStoragePrepareStatus  `json:"prepareStatus,omitempty"`
+	AccessorStatus     runtimev1alpha1.GPUStorageAccessorStatus `json:"accessorStatus,omitempty"`
+	ObservedGeneration int64                                    `json:"observedGeneration"`
+	LastSyncTime       time.Time                                `json:"lastSyncTime,omitempty"`
+	Reason             string                                   `json:"reason,omitempty"`
+	Message            string                                   `json:"message,omitempty"`
 }
