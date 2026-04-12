@@ -5,6 +5,8 @@ Copyright 2026.
 package v1alpha1
 
 import (
+	"strings"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -13,12 +15,14 @@ const (
 	StoragePhasePending = "Pending"
 	StoragePhaseFailed  = "Failed"
 
-	DefaultGPUStorageClassName    = "rook-ceph-block"
-	DefaultStorageAccessorPort    = 8080
-	DefaultStorageAccessorImage   = "busybox:1.36"
-	StorageAccessorContainerName  = "storage-accessor"
-	StoragePrepareMountPath       = "/workspace"
-	StoragePrepareSourceMountPath = "/source"
+	DefaultGPUStorageClassName     = "rook-ceph-block"
+	DefaultStoragePrepareCopyImage = "busybox:1.36"
+	DefaultStorageAccessorPort     = 5000
+	DefaultStorageAccessorImage    = "sigoden/dufs:latest"
+	StorageAccessorContainerName   = "storage-accessor"
+	StoragePrepareMountPath        = "/workspace"
+	StoragePrepareSourceMountPath  = "/source"
+	DefaultStorageProxyPathPrefix  = "/storage"
 
 	ConditionPrepared      = "Prepared"
 	ConditionAccessorReady = "AccessorReady"
@@ -157,4 +161,16 @@ type GPUStorageList struct {
 
 func init() {
 	SchemeBuilder.Register(&GPUStorage{}, &GPUStorageList{})
+}
+
+// StorageAccessorServiceResourceName returns the deterministic Service name used for one storage accessor.
+func StorageAccessorServiceResourceName(storageName string) string {
+	return clampStorageResourceName("storage-accessor-"+storageName, 63)
+}
+
+func clampStorageResourceName(name string, limit int) string {
+	if len(name) <= limit {
+		return name
+	}
+	return strings.TrimRight(name[:limit], "-")
 }

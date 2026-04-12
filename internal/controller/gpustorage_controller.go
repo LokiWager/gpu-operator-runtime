@@ -197,7 +197,7 @@ func (r *GPUStorageReconciler) reconcileGPUStorageAccessor(
 	}
 
 	return storageAccessorProgressFromDeployment(
-		storage.Namespace,
+		*storage,
 		service.Name,
 		currentDeployment.Status.AvailableReplicas,
 		serviceChanged || deploymentChanged,
@@ -433,13 +433,11 @@ func (r *GPUStorageReconciler) markStorageFailed(ctx context.Context, storage *r
 		},
 		Accessor: storage.Status.Accessor,
 	}
-	apimeta.SetStatusCondition(&next.Conditions, metav1.Condition{
-		Type:               runtimev1alpha1.ConditionReady,
-		Status:             metav1.ConditionFalse,
-		ObservedGeneration: storage.Generation,
-		Reason:             reason,
-		Message:            message,
-	})
+	apimeta.SetStatusCondition(&next.Conditions, statusConditionFromDecision(runtimev1alpha1.ConditionReady, storage.Generation, conditionDecision{
+		Status:  metav1.ConditionFalse,
+		Reason:  reason,
+		Message: message,
+	}))
 	return r.updateGPUStorageStatus(ctx, storage, next)
 }
 
@@ -499,122 +497,6 @@ func resolvedGPUStorageClassName(raw string) string {
 		return runtimev1alpha1.DefaultGPUStorageClassName
 	}
 	return raw
-}
-
-// buildGPUStorageStatus derives the storage status snapshot from PVC, prepare, and accessor state.
-func buildGPUStorageStatus(
-	storage runtimev1alpha1.GPUStorage,
-	pvc *corev1.PersistentVolumeClaim,
-	prepare storagePrepareProgress,
-	accessor storageAccessorProgress,
-) runtimev1alpha1.GPUStorageStatus {
-	next := runtimev1alpha1.GPUStorageStatus{
-		ClaimName:          firstNonEmpty(storage.Name),
-		ObservedGeneration: storage.Generation,
-		LastSyncTime:       metav1.NewTime(time.Now().UTC()),
-		Prepare: runtimev1alpha1.GPUStoragePrepareStatus{
-			Phase:          prepare.Phase,
-			JobName:        prepare.JobName,
-			ObservedDigest: prepare.Digest,
-			RecoveryPhase:  prepare.RecoveryPhase,
-		},
-		Accessor: runtimev1alpha1.GPUStorageAccessorStatus{
-			Phase:       accessor.Phase,
-			ServiceName: accessor.ServiceName,
-			AccessURL:   accessor.AccessURL,
-		},
-	}
-	if pvc != nil {
-		next.ClaimName = firstNonEmpty(pvc.Name, storage.Name)
-		if capacity, ok := pvc.Status.Capacity[corev1.ResourceStorage]; ok {
-			next.Capacity = capacity.String()
-		}
-	}
-
-	readyCondition := metav1.Condition{
-		Type:               runtimev1alpha1.ConditionReady,
-		ObservedGeneration: storage.Generation,
-	}
-	preparedCondition := metav1.Condition{
-		Type:               runtimev1alpha1.ConditionPrepared,
-		ObservedGeneration: storage.Generation,
-	}
-	accessorCondition := metav1.Condition{
-		Type:               runtimev1alpha1.ConditionAccessorReady,
-		ObservedGeneration: storage.Generation,
-	}
-
-	switch prepare.Phase {
-	case runtimev1alpha1.StoragePreparePhaseSucceeded, runtimev1alpha1.StoragePreparePhaseNotRequested:
-		preparedCondition.Status = metav1.ConditionTrue
-		preparedCondition.Reason = runtimev1alpha1.ReasonStoragePrepareReady
-		preparedCondition.Message = runtimev1alpha1.StatusMessageStoragePrepared
-	case runtimev1alpha1.StoragePreparePhaseFailed:
-		preparedCondition.Status = metav1.ConditionFalse
-		preparedCondition.Reason = runtimev1alpha1.ReasonStoragePrepareFailed
-		preparedCondition.Message = firstNonEmpty(prepare.Message, runtimev1alpha1.StatusMessageStoragePrepareFailed)
-	case runtimev1alpha1.StoragePreparePhaseRunning:
-		preparedCondition.Status = metav1.ConditionFalse
-		preparedCondition.Reason = runtimev1alpha1.ReasonStoragePrepareRunning
-		preparedCondition.Message = runtimev1alpha1.StatusMessageStoragePrepareRunning
-	default:
-		preparedCondition.Status = metav1.ConditionFalse
-		preparedCondition.Reason = runtimev1alpha1.ReasonStoragePreparePending
-		preparedCondition.Message = firstNonEmpty(prepare.Message, runtimev1alpha1.StatusMessageStoragePreparePending)
-	}
-
-	switch accessor.Phase {
-	case runtimev1alpha1.StorageAccessorPhaseReady, runtimev1alpha1.StorageAccessorPhaseDisabled:
-		accessorCondition.Status = metav1.ConditionTrue
-		accessorCondition.Reason = runtimev1alpha1.ReasonStorageAccessorReady
-		accessorCondition.Message = firstNonEmpty(accessor.Message, runtimev1alpha1.StatusMessageStorageAccessorReady)
-	case runtimev1alpha1.StorageAccessorPhaseFailed:
-		accessorCondition.Status = metav1.ConditionFalse
-		accessorCondition.Reason = runtimev1alpha1.ReasonStorageAccessorFailed
-		accessorCondition.Message = accessor.Message
-	default:
-		accessorCondition.Status = metav1.ConditionFalse
-		accessorCondition.Reason = runtimev1alpha1.ReasonStorageAccessorPending
-		accessorCondition.Message = firstNonEmpty(accessor.Message, runtimev1alpha1.StatusMessageStorageAccessorPending)
-	}
-
-	switch {
-	case pvc == nil || pvc.Status.Phase != corev1.ClaimBound:
-		next.Phase = runtimev1alpha1.StoragePhasePending
-		readyCondition.Status = metav1.ConditionFalse
-		readyCondition.Reason = runtimev1alpha1.ReasonStoragePending
-		readyCondition.Message = runtimev1alpha1.StatusMessageStoragePending
-	case prepare.Phase == runtimev1alpha1.StoragePreparePhaseFailed:
-		next.Phase = runtimev1alpha1.StoragePhaseFailed
-		readyCondition.Status = metav1.ConditionFalse
-		readyCondition.Reason = runtimev1alpha1.ReasonStoragePrepareFailed
-		readyCondition.Message = firstNonEmpty(prepare.Message, runtimev1alpha1.StatusMessageStoragePrepareFailed)
-	case storage.Spec.Accessor.Enabled && accessor.Phase == runtimev1alpha1.StorageAccessorPhaseFailed:
-		next.Phase = runtimev1alpha1.StoragePhaseFailed
-		readyCondition.Status = metav1.ConditionFalse
-		readyCondition.Reason = runtimev1alpha1.ReasonStorageAccessorFailed
-		readyCondition.Message = accessor.Message
-	case !prepare.Ready:
-		next.Phase = runtimev1alpha1.StoragePhasePending
-		readyCondition.Status = metav1.ConditionFalse
-		readyCondition.Reason = prepare.Reason
-		readyCondition.Message = prepare.Message
-	case storage.Spec.Accessor.Enabled && !accessor.Ready:
-		next.Phase = runtimev1alpha1.StoragePhasePending
-		readyCondition.Status = metav1.ConditionFalse
-		readyCondition.Reason = accessor.Reason
-		readyCondition.Message = accessor.Message
-	default:
-		next.Phase = runtimev1alpha1.StoragePhaseReady
-		readyCondition.Status = metav1.ConditionTrue
-		readyCondition.Reason = runtimev1alpha1.ReasonStorageReady
-		readyCondition.Message = runtimev1alpha1.StatusMessageStorageReady
-	}
-
-	apimeta.SetStatusCondition(&next.Conditions, readyCondition)
-	apimeta.SetStatusCondition(&next.Conditions, preparedCondition)
-	apimeta.SetStatusCondition(&next.Conditions, accessorCondition)
-	return next
 }
 
 func stringsTrim(value string) string {

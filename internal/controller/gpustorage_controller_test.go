@@ -240,6 +240,84 @@ func TestReconcileGPUStorageBoundPVCStartsPrepareJob(t *testing.T) {
 	}
 }
 
+func TestReconcileGPUStorageAccessorUsesDufs(t *testing.T) {
+	scheme := newControllerScheme(t)
+
+	storage := &runtimev1alpha1.GPUStorage{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: runtimev1alpha1.GroupVersion.String(),
+			Kind:       "GPUStorage",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "model-cache",
+			Namespace: runtimev1alpha1.DefaultInstanceNamespace,
+		},
+		Spec: runtimev1alpha1.GPUStorageSpec{
+			Size: "20Gi",
+			Accessor: runtimev1alpha1.GPUStorageAccessorSpec{
+				Enabled: true,
+			},
+		},
+	}
+	pvc := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "model-cache",
+			Namespace: runtimev1alpha1.DefaultInstanceNamespace,
+		},
+		Spec: corev1.PersistentVolumeClaimSpec{
+			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+			Resources: corev1.VolumeResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceStorage: mustParseQuantity(t, "20Gi"),
+				},
+			},
+		},
+		Status: corev1.PersistentVolumeClaimStatus{
+			Phase: corev1.ClaimBound,
+			Capacity: corev1.ResourceList{
+				corev1.ResourceStorage: mustParseQuantity(t, "20Gi"),
+			},
+		},
+	}
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&runtimev1alpha1.GPUStorage{}).
+		WithObjects(storage, pvc).
+		Build()
+
+	reconciler := &GPUStorageReconciler{
+		Client: cl,
+		Scheme: scheme,
+	}
+	_, err := reconciler.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: storage.Namespace, Name: storage.Name},
+	})
+	if err != nil {
+		t.Fatalf("reconcile error: %v", err)
+	}
+
+	var dep appsv1.Deployment
+	if err := cl.Get(context.Background(), types.NamespacedName{Namespace: storage.Namespace, Name: storageAccessorDeploymentName(storage.Name)}, &dep); err != nil {
+		t.Fatalf("expected accessor deployment to be created: %v", err)
+	}
+	container := dep.Spec.Template.Spec.Containers[0]
+	if container.Image != runtimev1alpha1.DefaultStorageAccessorImage {
+		t.Fatalf("expected dufs image %s, got %s", runtimev1alpha1.DefaultStorageAccessorImage, container.Image)
+	}
+	if len(container.Command) != 1 || container.Command[0] != "dufs" {
+		t.Fatalf("expected dufs command, got %+v", container.Command)
+	}
+
+	var got runtimev1alpha1.GPUStorage
+	if err := cl.Get(context.Background(), types.NamespacedName{Namespace: storage.Namespace, Name: storage.Name}, &got); err != nil {
+		t.Fatalf("get gpu storage error: %v", err)
+	}
+	if got.Status.Accessor.AccessURL != "http://storage-accessor-model-cache.runtime-instance.svc.cluster.local:5000/storage/runtime-instance/model-cache/" {
+		t.Fatalf("expected internal accessor url, got %+v", got.Status.Accessor)
+	}
+}
+
 func TestReconcileGPUStoragePrepareFailureMarksRecoveryRequired(t *testing.T) {
 	scheme := newControllerScheme(t)
 

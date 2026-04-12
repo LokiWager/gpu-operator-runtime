@@ -7,10 +7,10 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/utils/ptr"
 
 	runtimev1alpha1 "github.com/loki/gpu-operator-runtime/api/v1alpha1"
@@ -28,8 +28,22 @@ type resolvedGPUUnitStorageMount struct {
 	Ready     bool
 }
 
+type unitPodSpecParts struct {
+	Containers     []corev1.Container
+	InitContainers []corev1.Container
+	Volumes        []corev1.Volume
+}
+
+type unitSSHSidecarParts struct {
+	InitContainers []corev1.Container
+	Volumes        []corev1.Volume
+}
+
 // desiredUnitDeployment builds the single-replica workload owned by one GPUUnit.
-func desiredUnitDeployment(instance runtimev1alpha1.GPUUnit, storageMounts []resolvedGPUUnitStorageMount) (*appsv1.Deployment, error) {
+func desiredUnitDeployment(
+	instance runtimev1alpha1.GPUUnit,
+	storageMounts []resolvedGPUUnitStorageMount,
+) (*appsv1.Deployment, error) {
 	name := deploymentNameForUnit(instance.Name)
 	labels := unitObjectLabels(instance)
 	template, err := desiredUnitPodTemplate(instance, storageMounts)
@@ -52,34 +66,62 @@ func desiredUnitDeployment(instance runtimev1alpha1.GPUUnit, storageMounts []res
 }
 
 // desiredUnitPodTemplate converts the unit spec into the pod template owned by the Deployment.
-func desiredUnitPodTemplate(instance runtimev1alpha1.GPUUnit, storageMounts []resolvedGPUUnitStorageMount) (corev1.PodTemplateSpec, error) {
+func desiredUnitPodTemplate(
+	instance runtimev1alpha1.GPUUnit,
+	storageMounts []resolvedGPUUnitStorageMount,
+) (corev1.PodTemplateSpec, error) {
 	labels := unitPodLabels(instance)
-	image := instance.Spec.Image
-	if image == "" {
-		image = runtimev1alpha1.DefaultRuntimeImage
+	parts, err := desiredUnitPodSpecParts(instance, storageMounts)
+	if err != nil {
+		return corev1.PodTemplateSpec{}, err
 	}
 
-	resources := corev1.ResourceRequirements{}
-	if instance.Spec.Memory != "" {
-		qty, err := resource.ParseQuantity(instance.Spec.Memory)
-		if err != nil {
-			return corev1.PodTemplateSpec{}, fmt.Errorf(parseMemoryErrorFormat, instance.Spec.Memory, err)
-		}
-		resources.Requests = corev1.ResourceList{corev1.ResourceMemory: qty}
-		resources.Limits = corev1.ResourceList{corev1.ResourceMemory: qty}
-	}
-	if instance.Spec.GPU > 0 {
-		if resources.Requests == nil {
-			resources.Requests = corev1.ResourceList{}
-		}
-		if resources.Limits == nil {
-			resources.Limits = corev1.ResourceList{}
-		}
-		gpuQty := *resource.NewQuantity(int64(instance.Spec.GPU), resource.DecimalSI)
-		resources.Requests[corev1.ResourceName(runtimev1alpha1.NVIDIAGPUResourceName)] = gpuQty
-		resources.Limits[corev1.ResourceName(runtimev1alpha1.NVIDIAGPUResourceName)] = gpuQty
+	return corev1.PodTemplateSpec{
+		ObjectMeta: metav1.ObjectMeta{Labels: labels},
+		Spec: corev1.PodSpec{
+			Containers:     parts.Containers,
+			InitContainers: parts.InitContainers,
+			Volumes:        parts.Volumes,
+		},
+	}, nil
+}
+
+func desiredUnitPodSpecParts(
+	instance runtimev1alpha1.GPUUnit,
+	storageMounts []resolvedGPUUnitStorageMount,
+) (unitPodSpecParts, error) {
+	runtimeContainer, err := desiredUnitRuntimeContainer(instance, storageMounts)
+	if err != nil {
+		return unitPodSpecParts{}, err
 	}
 
+	parts := unitPodSpecParts{
+		Containers: []corev1.Container{runtimeContainer},
+		Volumes:    desiredStorageVolumes(storageMounts),
+	}
+	if lifecycleForUnit(instance) != runtimev1alpha1.LifecycleInstance || !instance.Spec.SSH.Enabled {
+		return parts, nil
+	}
+
+	sshParts, err := desiredUnitSSHSidecars(instance, storageMounts)
+	if err != nil {
+		return unitPodSpecParts{}, err
+	}
+	parts.InitContainers = append(parts.InitContainers, sshParts.InitContainers...)
+	parts.Volumes = append(parts.Volumes, sshParts.Volumes...)
+	return parts, nil
+}
+
+func desiredUnitRuntimeContainer(
+	instance runtimev1alpha1.GPUUnit,
+	storageMounts []resolvedGPUUnitStorageMount,
+) (corev1.Container, error) {
+	resources, err := desiredUnitRuntimeResources(instance)
+	if err != nil {
+		return corev1.Container{}, err
+	}
+
+	image := firstNonEmpty(instance.Spec.Image, runtimev1alpha1.DefaultRuntimeImage)
 	container := corev1.Container{
 		Name:            runtimev1alpha1.RuntimeWorkerContainerName,
 		Image:           image,
@@ -105,14 +147,31 @@ func desiredUnitPodTemplate(instance runtimev1alpha1.GPUUnit, storageMounts []re
 	for _, env := range instance.Spec.Template.Envs {
 		container.Env = append(container.Env, corev1.EnvVar{Name: env.Name, Value: env.Value})
 	}
+	return container, nil
+}
 
-	return corev1.PodTemplateSpec{
-		ObjectMeta: metav1.ObjectMeta{Labels: labels},
-		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{container},
-			Volumes:    desiredStorageVolumes(storageMounts),
-		},
-	}, nil
+func desiredUnitRuntimeResources(instance runtimev1alpha1.GPUUnit) (corev1.ResourceRequirements, error) {
+	resources := corev1.ResourceRequirements{}
+	if instance.Spec.Memory != "" {
+		qty, err := resource.ParseQuantity(instance.Spec.Memory)
+		if err != nil {
+			return corev1.ResourceRequirements{}, fmt.Errorf(parseMemoryErrorFormat, instance.Spec.Memory, err)
+		}
+		resources.Requests = corev1.ResourceList{corev1.ResourceMemory: qty}
+		resources.Limits = corev1.ResourceList{corev1.ResourceMemory: qty}
+	}
+	if instance.Spec.GPU > 0 {
+		if resources.Requests == nil {
+			resources.Requests = corev1.ResourceList{}
+		}
+		if resources.Limits == nil {
+			resources.Limits = corev1.ResourceList{}
+		}
+		gpuQty := *resource.NewQuantity(int64(instance.Spec.GPU), resource.DecimalSI)
+		resources.Requests[corev1.ResourceName(runtimev1alpha1.NVIDIAGPUResourceName)] = gpuQty
+		resources.Limits[corev1.ResourceName(runtimev1alpha1.NVIDIAGPUResourceName)] = gpuQty
+	}
+	return resources, nil
 }
 
 // defaultGPUUnitEnv injects runtime metadata that every managed container should see.
@@ -206,6 +265,268 @@ func desiredStorageVolumes(storageMounts []resolvedGPUUnitStorageMount) []corev1
 	return out
 }
 
+func desiredUnitSSHSidecars(
+	instance runtimev1alpha1.GPUUnit,
+	storageMounts []resolvedGPUUnitStorageMount,
+) (unitSSHSidecarParts, error) {
+	sshSpec, err := resolveUnitSSHSpec(instance)
+	if err != nil {
+		return unitSSHSidecarParts{}, err
+	}
+	return unitSSHSidecarParts{
+		InitContainers: []corev1.Container{
+			asRestartableInitSidecar(desiredUnitSSHServerSidecar(sshSpec, storageMounts)),
+			asRestartableInitSidecar(desiredUnitSSHFRPSidecar(instance, sshSpec)),
+		},
+		Volumes: []corev1.Volume{
+			desiredUnitSSHConfigVolume(),
+			desiredUnitSSHAuthorizedKeysVolume(instance.Name),
+		},
+	}, nil
+}
+
+func desiredUnitSSHServerSidecar(
+	sshSpec runtimev1alpha1.GPUUnitSSHSpec,
+	storageMounts []resolvedGPUUnitStorageMount,
+) corev1.Container {
+	return corev1.Container{
+		Name:            runtimev1alpha1.UnitSSHContainerName,
+		Image:           sshSpec.Image,
+		ImagePullPolicy: corev1.PullIfNotPresent,
+		Env: []corev1.EnvVar{
+			{Name: "PUID", Value: "1000"},
+			{Name: "PGID", Value: "1000"},
+			{Name: "TZ", Value: "Etc/UTC"},
+			{Name: unitSSHAuthorizedKeysEnvName, Value: unitSSHAuthorizedKeysFilePath()},
+			{Name: unitSSHAuthorizedKeysDigestEnv, Value: unitSSHAuthorizedKeysDigest(sshSpec)},
+			{Name: "USER_NAME", Value: sshSpec.Username},
+			{Name: "PASSWORD_ACCESS", Value: "false"},
+			{Name: "SUDO_ACCESS", Value: "true"},
+			{Name: "LOG_STDOUT", Value: "true"},
+		},
+		Ports: []corev1.ContainerPort{{
+			Name:          "ssh",
+			ContainerPort: sshSpec.Port,
+			Protocol:      corev1.ProtocolTCP,
+		}},
+		StartupProbe: &corev1.Probe{
+			ProbeHandler: corev1.ProbeHandler{
+				TCPSocket: &corev1.TCPSocketAction{
+					Port: intstr.FromInt32(sshSpec.Port),
+				},
+			},
+			PeriodSeconds:    1,
+			FailureThreshold: 30,
+		},
+		VolumeMounts: desiredUnitSSHVolumeMounts(storageMounts),
+	}
+}
+
+func desiredUnitSSHFRPSidecar(
+	instance runtimev1alpha1.GPUUnit,
+	sshSpec runtimev1alpha1.GPUUnitSSHSpec,
+) corev1.Container {
+	return corev1.Container{
+		Name:            runtimev1alpha1.UnitSSHFRPContainerName,
+		Image:           sshSpec.FRPImage,
+		ImagePullPolicy: corev1.PullIfNotPresent,
+		Command:         []string{"sh", "-c"},
+		Args:            []string{desiredUnitSSHFRPConfig(instance, sshSpec)},
+	}
+}
+
+func desiredUnitSSHVolumeMounts(storageMounts []resolvedGPUUnitStorageMount) []corev1.VolumeMount {
+	return append([]corev1.VolumeMount{
+		{
+			Name:      "ssh-config",
+			MountPath: "/config",
+		},
+		{
+			Name:      unitSSHAuthorizedKeysVolumeName,
+			MountPath: unitSSHAuthorizedKeysMountPath,
+			ReadOnly:  true,
+		},
+	}, desiredStorageVolumeMounts(storageMounts)...)
+}
+
+func desiredUnitSSHConfigVolume() corev1.Volume {
+	return corev1.Volume{
+		Name: "ssh-config",
+		VolumeSource: corev1.VolumeSource{
+			EmptyDir: &corev1.EmptyDirVolumeSource{},
+		},
+	}
+}
+
+func desiredUnitSSHAuthorizedKeysVolume(instanceName string) corev1.Volume {
+	defaultMode := int32(unitSSHAuthorizedKeysDefaultMode)
+	return corev1.Volume{
+		Name: unitSSHAuthorizedKeysVolumeName,
+		VolumeSource: corev1.VolumeSource{
+			ConfigMap: &corev1.ConfigMapVolumeSource{
+				LocalObjectReference: corev1.LocalObjectReference{
+					Name: unitSSHAuthorizedKeysConfigMapName(instanceName),
+				},
+				DefaultMode: &defaultMode,
+				Items: []corev1.KeyToPath{{
+					Key:  unitSSHAuthorizedKeysConfigKey,
+					Path: unitSSHAuthorizedKeysConfigKey,
+				}},
+			},
+		},
+	}
+}
+
+func asRestartableInitSidecar(container corev1.Container) corev1.Container {
+	container.RestartPolicy = ptr.To(corev1.ContainerRestartPolicyAlways)
+	return container
+}
+
+func resolveUnitSSHSpec(instance runtimev1alpha1.GPUUnit) (runtimev1alpha1.GPUUnitSSHSpec, error) {
+	ssh := instance.Spec.SSH
+	if !ssh.Enabled {
+		return runtimev1alpha1.GPUUnitSSHSpec{}, nil
+	}
+
+	username := strings.ToLower(firstNonEmpty(ssh.Username, runtimev1alpha1.DefaultUnitSSHUsername))
+	if errs := validation.IsDNS1123Label(username); len(errs) > 0 {
+		return runtimev1alpha1.GPUUnitSSHSpec{}, fmt.Errorf("%w: ssh.username %q is invalid: %s", errUnitSSHSpecIncomplete, username, strings.Join(errs, ", "))
+	}
+
+	keys := make([]string, 0, len(ssh.AuthorizedKeys))
+	seen := map[string]struct{}{}
+	for _, key := range ssh.AuthorizedKeys {
+		trimmed := strings.TrimSpace(key)
+		if trimmed == "" {
+			continue
+		}
+		if _, ok := seen[trimmed]; ok {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		keys = append(keys, trimmed)
+	}
+	if len(keys) == 0 {
+		return runtimev1alpha1.GPUUnitSSHSpec{}, fmt.Errorf("%w: ssh.authorizedKeys requires at least one public key when ssh.enabled is true", errUnitSSHSpecIncomplete)
+	}
+
+	port := ssh.Port
+	if port == 0 {
+		port = runtimev1alpha1.DefaultUnitSSHPort
+	}
+	serverAddr := strings.TrimSpace(ssh.ServerAddr)
+	if serverAddr == "" {
+		return runtimev1alpha1.GPUUnitSSHSpec{}, fmt.Errorf("%w: ssh.serverAddr is required when ssh.enabled is true", errUnitSSHSpecIncomplete)
+	}
+	serverPort := ssh.ServerPort
+	if serverPort == 0 {
+		serverPort = runtimev1alpha1.DefaultUnitSSHFRPPort
+	}
+	connectHost := firstNonEmpty(ssh.ConnectHost, serverAddr)
+	connectPort := ssh.ConnectPort
+	if connectPort == 0 {
+		connectPort = runtimev1alpha1.DefaultUnitSSHProxyPort
+	}
+	domainSuffix := strings.TrimPrefix(strings.TrimSpace(ssh.DomainSuffix), ".")
+	clientName := strings.ToLower(strings.TrimSpace(ssh.ClientName))
+	if clientName == "" {
+		clientName = prefixedRuntimeName("ssh-", instance.Namespace+"-"+instance.Name)
+	}
+	clientDomain := strings.ToLower(strings.TrimSpace(ssh.ClientDomain))
+	if clientDomain == "" {
+		if domainSuffix == "" {
+			return runtimev1alpha1.GPUUnitSSHSpec{}, fmt.Errorf("%w: ssh.domainSuffix is required when ssh.clientDomain is not set", errUnitSSHSpecIncomplete)
+		}
+		clientDomain = fmt.Sprintf("%s.%s.%s", instance.Name, instance.Namespace, domainSuffix)
+	}
+	for field, value := range map[string]int32{
+		"ssh.port":        port,
+		"ssh.serverPort":  serverPort,
+		"ssh.connectPort": connectPort,
+	} {
+		if value < 1 || value > 65535 {
+			return runtimev1alpha1.GPUUnitSSHSpec{}, fmt.Errorf("%w: %s must be between 1 and 65535", errUnitSSHSpecIncomplete, field)
+		}
+	}
+	if errs := validation.IsDNS1123Subdomain(clientName); len(errs) > 0 {
+		return runtimev1alpha1.GPUUnitSSHSpec{}, fmt.Errorf("%w: ssh.clientName %q is invalid: %s", errUnitSSHSpecIncomplete, clientName, strings.Join(errs, ", "))
+	}
+	if errs := validation.IsDNS1123Subdomain(clientDomain); len(errs) > 0 {
+		return runtimev1alpha1.GPUUnitSSHSpec{}, fmt.Errorf("%w: ssh.clientDomain %q is invalid: %s", errUnitSSHSpecIncomplete, clientDomain, strings.Join(errs, ", "))
+	}
+
+	image := firstNonEmpty(ssh.Image, runtimev1alpha1.DefaultUnitSSHImage)
+	frpImage := firstNonEmpty(ssh.FRPImage, runtimev1alpha1.DefaultUnitSSHFRPImage)
+
+	return runtimev1alpha1.GPUUnitSSHSpec{
+		Enabled:        true,
+		Username:       username,
+		AuthorizedKeys: keys,
+		Port:           port,
+		ServerAddr:     serverAddr,
+		ServerPort:     serverPort,
+		ConnectHost:    connectHost,
+		ConnectPort:    connectPort,
+		DomainSuffix:   domainSuffix,
+		ClientName:     clientName,
+		ClientDomain:   clientDomain,
+		Token:          strings.TrimSpace(ssh.Token),
+		Image:          image,
+		FRPImage:       frpImage,
+	}, nil
+}
+
+func desiredUnitSSHFRPConfig(instance runtimev1alpha1.GPUUnit, sshSpec runtimev1alpha1.GPUUnitSSHSpec) string {
+	lines := []string{
+		fmt.Sprintf("serverAddr = %q", sshSpec.ServerAddr),
+		fmt.Sprintf("serverPort = %d", sshSpec.ServerPort),
+	}
+	if strings.TrimSpace(sshSpec.Token) != "" {
+		lines = append(lines,
+			`auth.method = "token"`,
+			fmt.Sprintf("auth.token = %q", sshSpec.Token),
+		)
+	}
+	lines = append(lines,
+		"",
+		"[[proxies]]",
+		fmt.Sprintf("name = %q", sshProxyNameForUnit(instance, sshSpec)),
+		`type = "tcpmux"`,
+		`multiplexer = "httpconnect"`,
+		fmt.Sprintf("customDomains = [%q]", sshTargetHostForUnit(instance, sshSpec)),
+		`localIP = "127.0.0.1"`,
+		fmt.Sprintf("localPort = %d", sshSpec.Port),
+	)
+
+	return "cat <<'EOF' >/tmp/frpc.toml\n" + strings.Join(lines, "\n") + "\nEOF\nexec frpc -c /tmp/frpc.toml"
+}
+
+func sshProxyNameForUnit(instance runtimev1alpha1.GPUUnit, sshSpec runtimev1alpha1.GPUUnitSSHSpec) string {
+	if sshSpec.ClientName != "" {
+		return sshSpec.ClientName
+	}
+	return prefixedRuntimeName("ssh-", instance.Namespace+"-"+instance.Name)
+}
+
+func sshTargetHostForUnit(instance runtimev1alpha1.GPUUnit, sshSpec runtimev1alpha1.GPUUnitSSHSpec) string {
+	if sshSpec.ClientDomain != "" {
+		return sshSpec.ClientDomain
+	}
+	suffix := strings.TrimPrefix(strings.TrimSpace(sshSpec.DomainSuffix), ".")
+	return fmt.Sprintf("%s.%s.%s", instance.Name, instance.Namespace, suffix)
+}
+
+func buildUnitSSHAccessCommand(instance runtimev1alpha1.GPUUnit, sshSpec runtimev1alpha1.GPUUnitSSHSpec) string {
+	targetHost := sshTargetHostForUnit(instance, sshSpec)
+	return fmt.Sprintf(
+		`ssh -o ProxyCommand='nc -X connect -x %s:%d %%h %%p' %s@%s`,
+		sshSpec.ConnectHost,
+		sshSpec.ConnectPort,
+		sshSpec.Username,
+		targetHost,
+	)
+}
+
 // volumeNameForStorageMount returns the deterministic pod volume name for one attachment.
 func volumeNameForStorageMount(index int) string {
 	return fmt.Sprintf("storage-%d", index)
@@ -255,81 +576,6 @@ func buildUnitAccessURL(namespace, serviceName string, access runtimev1alpha1.GP
 	return "", fmt.Errorf("access.primaryPort %q does not exist in template.ports", normalizedAccess.PrimaryPort)
 }
 
-// podFailureMessage extracts the most useful startup failure from a pod status.
-func podFailureMessage(pod corev1.Pod) (string, bool) {
-	for _, status := range pod.Status.InitContainerStatuses {
-		if message, ok := containerFailureMessage(status); ok {
-			return fmt.Sprintf("Pod %s init container %s: %s", pod.Name, status.Name, message), true
-		}
-	}
-	for _, status := range pod.Status.ContainerStatuses {
-		if message, ok := containerFailureMessage(status); ok {
-			return fmt.Sprintf("Pod %s container %s: %s", pod.Name, status.Name, message), true
-		}
-	}
-	if pod.Status.Phase == corev1.PodFailed {
-		if message := firstNonEmpty(pod.Status.Message, pod.Status.Reason); message != "" {
-			return fmt.Sprintf("Pod %s: %s", pod.Name, message), true
-		}
-	}
-	return "", false
-}
-
-// containerFailureMessage extracts a meaningful failure from one container status entry.
-func containerFailureMessage(status corev1.ContainerStatus) (string, bool) {
-	if waiting := status.State.Waiting; waiting != nil {
-		if isIgnorableWaitingReason(waiting.Reason) {
-			return "", false
-		}
-		if waiting.Reason == "CrashLoopBackOff" {
-			if message := terminatedFailureMessage(status.LastTerminationState.Terminated); message != "" {
-				return message, true
-			}
-		}
-		if message := firstNonEmpty(waiting.Message, waiting.Reason); message != "" {
-			return message, true
-		}
-	}
-
-	if message := terminatedFailureMessage(status.State.Terminated); message != "" {
-		return message, true
-	}
-	return "", false
-}
-
-// terminatedFailureMessage normalizes terminated container state into one readable message.
-func terminatedFailureMessage(terminated *corev1.ContainerStateTerminated) string {
-	if terminated == nil {
-		return ""
-	}
-	if terminated.ExitCode == 0 && terminated.Signal == 0 {
-		return ""
-	}
-	if message := firstNonEmpty(terminated.Message); message != "" {
-		return message
-	}
-	if reason := firstNonEmpty(terminated.Reason); reason != "" {
-		if terminated.ExitCode != 0 {
-			return fmt.Sprintf("%s (exit code %d)", reason, terminated.ExitCode)
-		}
-		return reason
-	}
-	if terminated.ExitCode != 0 {
-		return fmt.Sprintf("container exited with code %d", terminated.ExitCode)
-	}
-	return fmt.Sprintf("container terminated by signal %d", terminated.Signal)
-}
-
-// isIgnorableWaitingReason filters transient startup states that should not mark failure.
-func isIgnorableWaitingReason(reason string) bool {
-	switch strings.TrimSpace(reason) {
-	case "", "ContainerCreating", "PodInitializing":
-		return true
-	default:
-		return false
-	}
-}
-
 // firstNonEmpty returns the first trimmed non-empty value from the candidates.
 func firstNonEmpty(values ...string) string {
 	for _, value := range values {
@@ -338,73 +584,6 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
-}
-
-// buildGPUUnitStatus derives the status snapshot written back after each reconcile.
-func buildGPUUnitStatus(instance runtimev1alpha1.GPUUnit, available int32, serviceName, accessURL, failureMessage string, storageReady bool, storageWaitMessage string) runtimev1alpha1.GPUUnitStatus {
-	next := runtimev1alpha1.GPUUnitStatus{
-		ReadyReplicas:      available,
-		ObservedGeneration: instance.Generation,
-		LastSyncTime:       metav1.NewTime(time.Now().UTC()),
-		ServiceName:        serviceName,
-		AccessURL:          accessURL,
-	}
-
-	condition := metav1.Condition{
-		Type:               runtimev1alpha1.ConditionReady,
-		ObservedGeneration: instance.Generation,
-	}
-
-	if lifecycleForUnit(instance) == runtimev1alpha1.LifecycleStock {
-		next.ServiceName = ""
-		next.AccessURL = ""
-		switch {
-		case available >= 1:
-			next.Phase = runtimev1alpha1.PhaseReady
-			condition.Status = metav1.ConditionTrue
-			condition.Reason = runtimev1alpha1.ReasonStockReady
-			condition.Message = runtimev1alpha1.StatusMessageStockReady
-		case failureMessage != "":
-			next.Phase = runtimev1alpha1.PhaseFailed
-			condition.Status = metav1.ConditionFalse
-			condition.Reason = runtimev1alpha1.ReasonPodStartupFailed
-			condition.Message = failureMessage
-		default:
-			next.Phase = runtimev1alpha1.PhaseProgressing
-			condition.Status = metav1.ConditionFalse
-			condition.Reason = runtimev1alpha1.ReasonStockNotReady
-			condition.Message = runtimev1alpha1.StatusMessageStockWait
-		}
-	} else {
-		switch {
-		case available >= 1:
-			next.Phase = runtimev1alpha1.PhaseReady
-			condition.Status = metav1.ConditionTrue
-			condition.Reason = runtimev1alpha1.ReasonUnitReady
-			condition.Message = runtimev1alpha1.StatusMessageUnitReady
-		case failureMessage != "":
-			next.Phase = runtimev1alpha1.PhaseFailed
-			condition.Status = metav1.ConditionFalse
-			condition.Reason = runtimev1alpha1.ReasonPodStartupFailed
-			condition.Message = failureMessage
-		case !storageReady:
-			next.Phase = runtimev1alpha1.PhaseProgressing
-			condition.Status = metav1.ConditionFalse
-			condition.Reason = runtimev1alpha1.ReasonStorageNotReady
-			if storageWaitMessage == "" {
-				storageWaitMessage = runtimev1alpha1.StatusMessageUnitStorage
-			}
-			condition.Message = storageWaitMessage
-		default:
-			next.Phase = runtimev1alpha1.PhaseProgressing
-			condition.Status = metav1.ConditionFalse
-			condition.Reason = runtimev1alpha1.ReasonUnitProgressing
-			condition.Message = runtimev1alpha1.StatusMessageUnitWait
-		}
-	}
-
-	apimeta.SetStatusCondition(&next.Conditions, condition)
-	return next
 }
 
 // lifecycleForUnit derives whether the controller should treat this unit as stock or active.

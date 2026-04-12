@@ -23,24 +23,6 @@ func normalizeGPUStorageName(name string) (string, error) {
 	return name, nil
 }
 
-func normalizeGPUStorageNamespace(namespace string) (string, error) {
-	namespace = strings.TrimSpace(namespace)
-	if namespace == "" {
-		namespace = runtimev1alpha1.DefaultInstanceNamespace
-	}
-	if errs := validation.IsDNS1123Label(namespace); len(errs) > 0 {
-		return "", &ValidationError{
-			Message: fmt.Sprintf("namespace %q is invalid: %s", namespace, strings.Join(errs, ", ")),
-		}
-	}
-	if namespace == runtimev1alpha1.DefaultStockNamespace {
-		return "", &ValidationError{
-			Message: fmt.Sprintf("namespace %q cannot be used for persistent storage", namespace),
-		}
-	}
-	return namespace, nil
-}
-
 func normalizeGPUStorageSize(size string) (string, resource.Quantity, error) {
 	size = strings.TrimSpace(size)
 	if size == "" {

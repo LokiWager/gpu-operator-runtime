@@ -273,6 +273,153 @@ func TestReconcileInstanceGPUUnitMountsReadyStorage(t *testing.T) {
 	}
 }
 
+func TestReconcileInstanceGPUUnitAddsSSHSidecarsAndStatus(t *testing.T) {
+	scheme := newControllerScheme(t)
+
+	instance := &runtimev1alpha1.GPUUnit{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: runtimev1alpha1.GroupVersion.String(),
+			Kind:       "GPUUnit",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "demo-instance",
+			Namespace: runtimev1alpha1.DefaultInstanceNamespace,
+		},
+		Spec: runtimev1alpha1.GPUUnitSpec{
+			SpecName: "g1.1",
+			Image:    "python:3.12",
+			Memory:   "16Gi",
+			GPU:      1,
+			Template: runtimev1alpha1.GPUUnitTemplate{
+				Ports: []runtimev1alpha1.GPUUnitPortSpec{{
+					Name: "http",
+					Port: 8080,
+				}},
+			},
+			Access: runtimev1alpha1.GPUUnitAccess{
+				PrimaryPort: "http",
+				Scheme:      "http",
+			},
+			SSH: runtimev1alpha1.GPUUnitSSHSpec{
+				Enabled:        true,
+				Username:       "runtime",
+				AuthorizedKeys: []string{"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA== demo@example"},
+				ServerAddr:     "frps.internal",
+				ServerPort:     7000,
+				ConnectHost:    "ssh.example.com",
+				ConnectPort:    1337,
+				DomainSuffix:   "ssh.example.com",
+				Token:          "secret",
+			},
+		},
+	}
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&runtimev1alpha1.GPUUnit{}).
+		WithObjects(instance).
+		Build()
+
+	reconciler := &GPUUnitReconciler{
+		Client: cl,
+		Scheme: scheme,
+	}
+	_, err := reconciler.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: instance.Namespace, Name: instance.Name},
+	})
+	if err != nil {
+		t.Fatalf("reconcile error: %v", err)
+	}
+
+	var dep appsv1.Deployment
+	if err := cl.Get(context.Background(), types.NamespacedName{Namespace: instance.Namespace, Name: deploymentNameForUnit(instance.Name)}, &dep); err != nil {
+		t.Fatalf("deployment should be created: %v", err)
+	}
+	var sshKeysConfig corev1.ConfigMap
+	if err := cl.Get(context.Background(), types.NamespacedName{Namespace: instance.Namespace, Name: unitSSHAuthorizedKeysConfigMapName(instance.Name)}, &sshKeysConfig); err != nil {
+		t.Fatalf("ssh authorized keys config should be created: %v", err)
+	}
+	expectedAuthorizedKeys := "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA== demo@example\n"
+	if sshKeysConfig.Data[unitSSHAuthorizedKeysConfigKey] != expectedAuthorizedKeys {
+		t.Fatalf("expected authorized_keys config %q, got %+v", expectedAuthorizedKeys, sshKeysConfig.Data)
+	}
+	if len(dep.Spec.Template.Spec.Containers) != 1 {
+		t.Fatalf("expected one runtime container, got %+v", dep.Spec.Template.Spec.Containers)
+	}
+	if dep.Spec.Template.Spec.Containers[0].Name != runtimev1alpha1.RuntimeWorkerContainerName {
+		t.Fatalf("expected runtime container %s, got %+v", runtimev1alpha1.RuntimeWorkerContainerName, dep.Spec.Template.Spec.Containers)
+	}
+	if len(dep.Spec.Template.Spec.InitContainers) != 2 {
+		t.Fatalf("expected ssh sidecars to run as restartable init containers, got %+v", dep.Spec.Template.Spec.InitContainers)
+	}
+
+	foundSSH := false
+	foundFRP := false
+	for _, container := range dep.Spec.Template.Spec.InitContainers {
+		switch container.Name {
+		case runtimev1alpha1.UnitSSHContainerName:
+			foundSSH = true
+			if container.StartupProbe == nil || container.StartupProbe.TCPSocket == nil || container.StartupProbe.TCPSocket.Port.IntVal != runtimev1alpha1.DefaultUnitSSHPort {
+				t.Fatalf("expected ssh init sidecar startup probe on port %d, got %+v", runtimev1alpha1.DefaultUnitSSHPort, container.StartupProbe)
+			}
+			env := map[string]string{}
+			for _, item := range container.Env {
+				env[item.Name] = item.Value
+			}
+			if env[unitSSHAuthorizedKeysEnvName] != unitSSHAuthorizedKeysFilePath() {
+				t.Fatalf("expected %s=%s, got %+v", unitSSHAuthorizedKeysEnvName, unitSSHAuthorizedKeysFilePath(), container.Env)
+			}
+			if env[unitSSHAuthorizedKeysDigestEnv] == "" {
+				t.Fatalf("expected %s to be populated, got %+v", unitSSHAuthorizedKeysDigestEnv, container.Env)
+			}
+			foundAuthorizedKeysMount := false
+			for _, mount := range container.VolumeMounts {
+				if mount.Name == unitSSHAuthorizedKeysVolumeName && mount.MountPath == unitSSHAuthorizedKeysMountPath && mount.ReadOnly {
+					foundAuthorizedKeysMount = true
+				}
+			}
+			if !foundAuthorizedKeysMount {
+				t.Fatalf("expected authorized_keys volume mount, got %+v", container.VolumeMounts)
+			}
+		case runtimev1alpha1.UnitSSHFRPContainerName:
+			foundFRP = true
+		}
+		if container.RestartPolicy == nil || *container.RestartPolicy != corev1.ContainerRestartPolicyAlways {
+			t.Fatalf("expected init container %s restartPolicy=Always, got %+v", container.Name, container.RestartPolicy)
+		}
+	}
+	if !foundSSH || !foundFRP {
+		t.Fatalf("expected ssh and frpc init containers, got %+v", dep.Spec.Template.Spec.InitContainers)
+	}
+	foundAuthorizedKeysVolume := false
+	for _, volume := range dep.Spec.Template.Spec.Volumes {
+		if volume.Name == unitSSHAuthorizedKeysVolumeName &&
+			volume.ConfigMap != nil &&
+			volume.ConfigMap.LocalObjectReference.Name == unitSSHAuthorizedKeysConfigMapName(instance.Name) {
+			foundAuthorizedKeysVolume = true
+		}
+	}
+	if !foundAuthorizedKeysVolume {
+		t.Fatalf("expected authorized_keys config volume, got %+v", dep.Spec.Template.Spec.Volumes)
+	}
+
+	var got runtimev1alpha1.GPUUnit
+	if err := cl.Get(context.Background(), types.NamespacedName{Namespace: instance.Namespace, Name: instance.Name}, &got); err != nil {
+		t.Fatalf("get gpu unit error: %v", err)
+	}
+	if got.Status.SSH.Phase != runtimev1alpha1.UnitSSHPhasePending {
+		t.Fatalf("expected pending ssh phase, got %+v", got.Status.SSH)
+	}
+	expectedCommand := "ssh -o ProxyCommand='nc -X connect -x ssh.example.com:1337 %h %p' runtime@demo-instance.runtime-instance.ssh.example.com"
+	if got.Status.SSH.AccessCommand != expectedCommand {
+		t.Fatalf("expected ssh access command %q, got %q", expectedCommand, got.Status.SSH.AccessCommand)
+	}
+	cond := apimeta.FindStatusCondition(got.Status.Conditions, runtimev1alpha1.ConditionSSHReady)
+	if cond == nil || cond.Reason != runtimev1alpha1.ReasonUnitSSHPending {
+		t.Fatalf("expected pending ssh condition, got %+v", cond)
+	}
+}
+
 func TestReconcileInstanceGPUUnitPendingStorageMarksStatusWaiting(t *testing.T) {
 	scheme := newControllerScheme(t)
 
@@ -472,5 +619,98 @@ func TestReconcileStockGPUUnitPodFailureMarksStatusFailed(t *testing.T) {
 	expected := "Pod stock-pool-a-1-abc123 container runtime-worker: model initialization failed: missing weights"
 	if cond.Message != expected {
 		t.Fatalf("unexpected pod failure message: %s", cond.Message)
+	}
+}
+
+func TestReconcileInstanceGPUUnitInitSidecarFailureMarksStatusFailed(t *testing.T) {
+	scheme := newControllerScheme(t)
+
+	instance := &runtimev1alpha1.GPUUnit{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: runtimev1alpha1.GroupVersion.String(),
+			Kind:       "GPUUnit",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "demo-instance",
+			Namespace: runtimev1alpha1.DefaultInstanceNamespace,
+		},
+		Spec: runtimev1alpha1.GPUUnitSpec{
+			SpecName: "g1.1",
+			Image:    "python:3.12",
+			SSH: runtimev1alpha1.GPUUnitSSHSpec{
+				Enabled:        true,
+				Username:       "runtime",
+				AuthorizedKeys: []string{"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA== demo@example"},
+				ServerAddr:     "frps.internal",
+				ServerPort:     7000,
+				ConnectHost:    "ssh.example.com",
+				ConnectPort:    1337,
+				DomainSuffix:   "ssh.example.com",
+			},
+		},
+	}
+
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "demo-instance-abc123",
+			Namespace: instance.Namespace,
+			Labels: map[string]string{
+				runtimev1alpha1.LabelUnitKey: instance.Name,
+			},
+		},
+		Status: corev1.PodStatus{
+			InitContainerStatuses: []corev1.ContainerStatus{{
+				Name: runtimev1alpha1.UnitSSHContainerName,
+				State: corev1.ContainerState{
+					Waiting: &corev1.ContainerStateWaiting{
+						Reason:  "CrashLoopBackOff",
+						Message: "back-off restarting failed container",
+					},
+				},
+				LastTerminationState: corev1.ContainerState{
+					Terminated: &corev1.ContainerStateTerminated{
+						ExitCode: 1,
+						Message:  "sshd failed to load authorized keys",
+					},
+				},
+			}},
+		},
+	}
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&runtimev1alpha1.GPUUnit{}).
+		WithObjects(instance, pod).
+		Build()
+
+	reconciler := &GPUUnitReconciler{Client: cl, Scheme: scheme}
+	_, err := reconciler.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: instance.Namespace, Name: instance.Name},
+	})
+	if err != nil {
+		t.Fatalf("reconcile error: %v", err)
+	}
+
+	var got runtimev1alpha1.GPUUnit
+	if err := cl.Get(context.Background(), types.NamespacedName{Namespace: instance.Namespace, Name: instance.Name}, &got); err != nil {
+		t.Fatalf("get gpu unit error: %v", err)
+	}
+	if got.Status.Phase != runtimev1alpha1.PhaseFailed {
+		t.Fatalf("expected phase=%s, got %s", runtimev1alpha1.PhaseFailed, got.Status.Phase)
+	}
+	readyCond := apimeta.FindStatusCondition(got.Status.Conditions, runtimev1alpha1.ConditionReady)
+	if readyCond == nil || readyCond.Reason != runtimev1alpha1.ReasonPodStartupFailed {
+		t.Fatalf("expected pod startup failure condition, got %+v", readyCond)
+	}
+	expectedReadyMessage := "Pod demo-instance-abc123 container ssh-server: sshd failed to load authorized keys"
+	if readyCond.Message != expectedReadyMessage {
+		t.Fatalf("unexpected ready condition message: %s", readyCond.Message)
+	}
+	sshCond := apimeta.FindStatusCondition(got.Status.Conditions, runtimev1alpha1.ConditionSSHReady)
+	if sshCond == nil || sshCond.Reason != runtimev1alpha1.ReasonUnitSSHFailed {
+		t.Fatalf("expected ssh failure condition, got %+v", sshCond)
+	}
+	if sshCond.Message != expectedReadyMessage {
+		t.Fatalf("unexpected ssh condition message: %s", sshCond.Message)
 	}
 }

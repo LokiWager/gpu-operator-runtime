@@ -5,14 +5,16 @@ Teaching-oriented Golang + Kubernetes project for building a GPU runtime control
 The current chapter turns storage into an operational data path:
 
 - `GPUUnit` still owns runtime lifecycle
-- `GPUStorage` now owns PVC lifecycle, prepare jobs, and the first accessor service
+- `GPUStorage` now owns PVC lifecycle, prepare jobs, and a `dufs`-backed accessor service
 - `GPUStorage` defaults to an RBD-backed workspace volume (`rook-ceph-block`)
 - stock still lives in `runtime-stock`
 - active runtime and storage live in `runtime-instance`
 - storage can now be seeded from an image or an existing storage object
 - failed prepare jobs now surface recovery state instead of disappearing into pod logs
+- a shared `runtime-proxy` command can reverse proxy user traffic into storage accessors
+- active `GPUUnit` objects can now opt into SSH access through an injected shell sidecar and `frpc`
 
-The operator API seeds stock units into `runtime-stock`. The runtime API consumes one ready stock unit and creates an active `GPUUnit`. The storage API now creates RBD-backed `GPUStorage` objects, tracks controller-owned prepare jobs, and can publish the first built-in accessor path through a storage-owned service.
+The operator API seeds stock units into `runtime-stock`. The runtime API consumes one ready stock unit and creates an active `GPUUnit`. The storage API now creates RBD-backed `GPUStorage` objects, tracks controller-owned prepare jobs, and can publish a built-in file browser through a storage-owned service and a shared proxy path.
 
 ## Prerequisites
 
@@ -73,13 +75,25 @@ make tidy
 make run
 ```
 
+`make run` now starts the manager with `config/local/runtime-manager.yaml`.
+If you want to point at a different local config file directly:
+
+```bash
+GOTOOLCHAIN=go1.26.0 go run ./cmd/main.go --config config/local/runtime-manager.yaml
+```
+
+Run the shared storage proxy in a second terminal:
+
+```bash
+GOTOOLCHAIN=go1.26.0 go run ./cmd/runtime-proxy --http-addr :8090
+```
+
 Useful flags:
 
-- `--http-addr` default `:8080`
+- `--config` optional manager YAML config path; defaults to built-in values when omitted
 - `--kubeconfig` optional standard controller-runtime flag
-- `--report-interval` default `30s`
-- `--metrics-bind-address` default `0`
-- `--health-probe-bind-address` default `:8081`
+- zap logging flags such as `--zap-devel`
+- `cmd/runtime-proxy` still accepts `--http-addr` and `--kubeconfig`
 
 Swagger UI is served at:
 
@@ -146,7 +160,6 @@ curl -s -X POST http://127.0.0.1:8080/api/v1/gpu-storages \
   -H 'Content-Type: application/json' \
   -d '{
     "name":"model-cache",
-    "namespace":"runtime-instance",
     "size":"20Gi",
     "storageClassName":"rook-ceph-block",
     "prepare":{
@@ -163,11 +176,17 @@ curl -s -X POST http://127.0.0.1:8080/api/v1/gpu-storages \
 Inspect storage, the prepare job, and the accessor:
 
 ```bash
-curl -s 'http://127.0.0.1:8080/api/v1/gpu-storages/model-cache?namespace=runtime-instance' | jq
+curl -s 'http://127.0.0.1:8080/api/v1/gpu-storages/model-cache' | jq
 kubectl get gpustorages -n runtime-instance
 kubectl get pvc -n runtime-instance
 kubectl get jobs -n runtime-instance -l runtime.lokiwager.io/storage=model-cache
 kubectl get deploy,svc -n runtime-instance | grep storage-accessor-model-cache
+```
+
+If `runtime-proxy` is running, the same storage will be available through:
+
+```text
+http://127.0.0.1:8090/storage/runtime-instance/model-cache/
 ```
 
 ### 3. Consume one ready stock unit into an active runtime
@@ -178,12 +197,23 @@ curl -s -X POST http://127.0.0.1:8080/api/v1/gpu-units \
   -d '{
     "operationID":"unit-demo-001",
     "name":"demo-instance",
-    "namespace":"runtime-instance",
     "specName":"g1.1",
     "image":"python:3.12",
     "access":{
       "primaryPort":"http",
       "scheme":"http"
+    },
+    "ssh":{
+      "enabled":true,
+      "username":"runtime",
+      "serverAddr":"frps.internal",
+      "serverPort":7000,
+      "connectHost":"ssh.example.com",
+      "connectPort":1337,
+      "domainSuffix":"ssh.example.com",
+      "authorizedKeys":[
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA== demo@example"
+      ]
     },
     "template":{
       "command":["python"],
@@ -207,12 +237,18 @@ kubectl get gpuunit demo-instance -n runtime-instance -o yaml
 kubectl get deploy,svc,pod,pvc -n runtime-instance | grep demo-instance
 ```
 
+If the create request included SSH settings, `status.ssh.accessCommand` will contain a ready-to-run command similar to:
+
+```bash
+ssh -o ProxyCommand='nc -X connect -x ssh.example.com:1337 %h %p' runtime@demo-instance.runtime-instance.ssh.example.com
+```
+
 ### 5. Update runtime or storage
 
 Resize storage:
 
 ```bash
-curl -s -X PUT 'http://127.0.0.1:8080/api/v1/gpu-storages/model-cache?namespace=runtime-instance' \
+curl -s -X PUT 'http://127.0.0.1:8080/api/v1/gpu-storages/model-cache' \
   -H 'Content-Type: application/json' \
   -d '{
     "size":"40Gi"
@@ -222,7 +258,7 @@ curl -s -X PUT 'http://127.0.0.1:8080/api/v1/gpu-storages/model-cache?namespace=
 Disable the accessor later:
 
 ```bash
-curl -s -X PUT 'http://127.0.0.1:8080/api/v1/gpu-storages/model-cache?namespace=runtime-instance' \
+curl -s -X PUT 'http://127.0.0.1:8080/api/v1/gpu-storages/model-cache' \
   -H 'Content-Type: application/json' \
   -d '{
     "size":"40Gi",
@@ -235,7 +271,7 @@ curl -s -X PUT 'http://127.0.0.1:8080/api/v1/gpu-storages/model-cache?namespace=
 Move the mount path on the runtime:
 
 ```bash
-curl -s -X PUT 'http://127.0.0.1:8080/api/v1/gpu-units/demo-instance?namespace=runtime-instance' \
+curl -s -X PUT 'http://127.0.0.1:8080/api/v1/gpu-units/demo-instance' \
   -H 'Content-Type: application/json' \
   -d '{
     "storageMounts":[
@@ -252,7 +288,7 @@ curl -s -X PUT 'http://127.0.0.1:8080/api/v1/gpu-units/demo-instance?namespace=r
 Delete the runtime:
 
 ```bash
-curl -i -X DELETE 'http://127.0.0.1:8080/api/v1/gpu-units/demo-instance?namespace=runtime-instance'
+curl -i -X DELETE 'http://127.0.0.1:8080/api/v1/gpu-units/demo-instance'
 ```
 
 The storage object and PVC stay behind.
@@ -260,13 +296,13 @@ The storage object and PVC stay behind.
 Delete the storage after it is no longer mounted:
 
 ```bash
-curl -i -X DELETE 'http://127.0.0.1:8080/api/v1/gpu-storages/model-cache?namespace=runtime-instance'
+curl -i -X DELETE 'http://127.0.0.1:8080/api/v1/gpu-storages/model-cache'
 ```
 
 If a prepare job fails and you want the controller to start a new attempt:
 
 ```bash
-curl -s -X POST 'http://127.0.0.1:8080/api/v1/gpu-storages/model-cache/recover?namespace=runtime-instance' | jq
+curl -s -X POST 'http://127.0.0.1:8080/api/v1/gpu-storages/model-cache/recover' | jq
 ```
 
 ## Operational notes
@@ -303,6 +339,7 @@ make ci
 - `api/v1alpha1`: `GPUUnit` and `GPUStorage` API schemas
 - `internal/controller`: runtime and storage reconcilers plus workload helper logic
 - `pkg/api`: Echo HTTP handlers and Swagger annotations
+- `pkg/config`: local process configuration loaded from YAML
 - `pkg/service`: stock seeding, stock consumption, storage CRUD, recovery actions, idempotency, and API orchestration
 - `pkg/jobs`: periodic status logging
 - `config/`: generated CRDs, RBAC, and sample manifests

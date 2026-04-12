@@ -23,7 +23,7 @@ const docTemplate = `{
     "paths": {
         "/gpu-storages": {
             "get": {
-                "description": "List RBD-backed GPU storage resources, including prepare-job and accessor status, optionally filtered by namespace.",
+                "description": "List RBD-backed GPU storage resources in the shared runtime instance namespace, including prepare-job and accessor status.",
                 "produces": [
                     "application/json"
                 ],
@@ -31,14 +31,6 @@ const docTemplate = `{
                     "storage"
                 ],
                 "summary": "List GPU storages",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Namespace filter",
-                        "name": "namespace",
-                        "in": "query"
-                    }
-                ],
                 "responses": {
                     "200": {
                         "description": "OK",
@@ -140,12 +132,6 @@ const docTemplate = `{
                         "name": "name",
                         "in": "path",
                         "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "Namespace filter",
-                        "name": "namespace",
-                        "in": "query"
                     }
                 ],
                 "responses": {
@@ -194,12 +180,6 @@ const docTemplate = `{
                         "name": "name",
                         "in": "path",
                         "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "Namespace filter",
-                        "name": "namespace",
-                        "in": "query"
                     },
                     {
                         "description": "Update GPU storage request",
@@ -254,12 +234,6 @@ const docTemplate = `{
                         "name": "name",
                         "in": "path",
                         "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "Namespace filter",
-                        "name": "namespace",
-                        "in": "query"
                     }
                 ],
                 "responses": {
@@ -313,12 +287,6 @@ const docTemplate = `{
                         "name": "name",
                         "in": "path",
                         "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "Namespace filter",
-                        "name": "namespace",
-                        "in": "query"
                     }
                 ],
                 "responses": {
@@ -359,14 +327,6 @@ const docTemplate = `{
                     "runtime"
                 ],
                 "summary": "List GPU units",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Namespace filter",
-                        "name": "namespace",
-                        "in": "query"
-                    }
-                ],
                 "responses": {
                     "200": {
                         "description": "OK",
@@ -413,7 +373,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/service.CreateGPUUnitRequest"
+                            "$ref": "#/definitions/contract.CreateGPUUnitRequest"
                         }
                     }
                 ],
@@ -474,12 +434,6 @@ const docTemplate = `{
                         "name": "name",
                         "in": "path",
                         "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "Namespace filter",
-                        "name": "namespace",
-                        "in": "query"
                     }
                 ],
                 "responses": {
@@ -530,18 +484,12 @@ const docTemplate = `{
                         "required": true
                     },
                     {
-                        "type": "string",
-                        "description": "Namespace filter",
-                        "name": "namespace",
-                        "in": "query"
-                    },
-                    {
                         "description": "Update GPU unit request",
                         "name": "request",
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/service.UpdateGPUUnitRequest"
+                            "$ref": "#/definitions/contract.UpdateGPUUnitRequest"
                         }
                     }
                 ],
@@ -588,12 +536,6 @@ const docTemplate = `{
                         "name": "name",
                         "in": "path",
                         "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "Namespace filter",
-                        "name": "namespace",
-                        "in": "query"
                     }
                 ],
                 "responses": {
@@ -836,6 +778,61 @@ const docTemplate = `{
                 }
             }
         },
+        "contract.CreateGPUUnitRequest": {
+            "type": "object",
+            "properties": {
+                "access": {
+                    "$ref": "#/definitions/v1alpha1.GPUUnitAccess"
+                },
+                "image": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "operationID": {
+                    "type": "string"
+                },
+                "specName": {
+                    "type": "string"
+                },
+                "ssh": {
+                    "$ref": "#/definitions/v1alpha1.GPUUnitSSHSpec"
+                },
+                "storageMounts": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/v1alpha1.GPUUnitStorageMount"
+                    }
+                },
+                "template": {
+                    "$ref": "#/definitions/v1alpha1.GPUUnitTemplate"
+                }
+            }
+        },
+        "contract.UpdateGPUUnitRequest": {
+            "type": "object",
+            "properties": {
+                "access": {
+                    "$ref": "#/definitions/v1alpha1.GPUUnitAccess"
+                },
+                "image": {
+                    "type": "string"
+                },
+                "ssh": {
+                    "$ref": "#/definitions/v1alpha1.GPUUnitSSHSpec"
+                },
+                "storageMounts": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/v1alpha1.GPUUnitStorageMount"
+                    }
+                },
+                "template": {
+                    "$ref": "#/definitions/v1alpha1.GPUUnitTemplate"
+                }
+            }
+        },
         "domain.GPUStorageRuntime": {
             "type": "object",
             "properties": {
@@ -949,6 +946,12 @@ const docTemplate = `{
                 "specName": {
                     "type": "string"
                 },
+                "ssh": {
+                    "$ref": "#/definitions/v1alpha1.GPUUnitSSHSpec"
+                },
+                "sshStatus": {
+                    "$ref": "#/definitions/v1alpha1.GPUUnitSSHStatus"
+                },
                 "storageMounts": {
                     "type": "array",
                     "items": {
@@ -1042,9 +1045,6 @@ const docTemplate = `{
                 "name": {
                     "type": "string"
                 },
-                "namespace": {
-                    "type": "string"
-                },
                 "prepare": {
                     "$ref": "#/definitions/v1alpha1.GPUStoragePrepareSpec"
                 },
@@ -1053,41 +1053,6 @@ const docTemplate = `{
                 },
                 "storageClassName": {
                     "type": "string"
-                }
-            }
-        },
-        "service.CreateGPUUnitRequest": {
-            "type": "object",
-            "properties": {
-                "access": {
-                    "$ref": "#/definitions/v1alpha1.GPUUnitAccess"
-                },
-                "image": {
-                    "type": "string"
-                },
-                "name": {
-                    "type": "string"
-                },
-                "namespace": {
-                    "type": "string"
-                },
-                "operationID": {
-                    "type": "string"
-                },
-                "specName": {
-                    "type": "string"
-                },
-                "stockNamespace": {
-                    "type": "string"
-                },
-                "storageMounts": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/v1alpha1.GPUUnitStorageMount"
-                    }
-                },
-                "template": {
-                    "$ref": "#/definitions/v1alpha1.GPUUnitTemplate"
                 }
             }
         },
@@ -1119,26 +1084,6 @@ const docTemplate = `{
                 },
                 "size": {
                     "type": "string"
-                }
-            }
-        },
-        "service.UpdateGPUUnitRequest": {
-            "type": "object",
-            "properties": {
-                "access": {
-                    "$ref": "#/definitions/v1alpha1.GPUUnitAccess"
-                },
-                "image": {
-                    "type": "string"
-                },
-                "storageMounts": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/v1alpha1.GPUUnitStorageMount"
-                    }
-                },
-                "template": {
-                    "$ref": "#/definitions/v1alpha1.GPUUnitTemplate"
                 }
             }
         },
@@ -1256,6 +1201,85 @@ const docTemplate = `{
                 },
                 "protocol": {
                     "$ref": "#/definitions/v1.Protocol"
+                }
+            }
+        },
+        "v1alpha1.GPUUnitSSHSpec": {
+            "type": "object",
+            "properties": {
+                "authorizedKeys": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "clientDomain": {
+                    "type": "string"
+                },
+                "clientName": {
+                    "type": "string"
+                },
+                "connectHost": {
+                    "description": "ConnectHost is the user-facing HTTP CONNECT proxy host used in the ready-to-run SSH command.",
+                    "type": "string"
+                },
+                "connectPort": {
+                    "description": "+kubebuilder:validation:Minimum=1\n+kubebuilder:validation:Maximum=65535",
+                    "type": "integer"
+                },
+                "domainSuffix": {
+                    "description": "DomainSuffix is combined with name + namespace when ClientDomain is omitted.",
+                    "type": "string"
+                },
+                "enabled": {
+                    "type": "boolean"
+                },
+                "frpImage": {
+                    "type": "string"
+                },
+                "image": {
+                    "type": "string"
+                },
+                "port": {
+                    "description": "+kubebuilder:validation:Minimum=1\n+kubebuilder:validation:Maximum=65535",
+                    "type": "integer"
+                },
+                "serverAddr": {
+                    "description": "ServerAddr is the FRP server address that the injected sidecar dials.",
+                    "type": "string"
+                },
+                "serverPort": {
+                    "description": "+kubebuilder:validation:Minimum=1\n+kubebuilder:validation:Maximum=65535",
+                    "type": "integer"
+                },
+                "token": {
+                    "type": "string"
+                },
+                "username": {
+                    "type": "string"
+                }
+            }
+        },
+        "v1alpha1.GPUUnitSSHStatus": {
+            "type": "object",
+            "properties": {
+                "accessCommand": {
+                    "type": "string"
+                },
+                "connectHost": {
+                    "type": "string"
+                },
+                "connectPort": {
+                    "type": "integer"
+                },
+                "phase": {
+                    "type": "string"
+                },
+                "targetHost": {
+                    "type": "string"
+                },
+                "username": {
+                    "type": "string"
                 }
             }
         },

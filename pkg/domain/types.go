@@ -53,6 +53,7 @@ type GPUUnitRuntime struct {
 	GPU                  int32                                 `json:"gpu,omitempty"`
 	Template             runtimev1alpha1.GPUUnitTemplate       `json:"template,omitempty"`
 	Access               runtimev1alpha1.GPUUnitAccess         `json:"access,omitempty"`
+	SSH                  runtimev1alpha1.GPUUnitSSHSpec        `json:"ssh,omitempty"`
 	StorageMounts        []runtimev1alpha1.GPUUnitStorageMount `json:"storageMounts,omitempty"`
 	Phase                string                                `json:"phase"`
 	ReadyReplicas        int32                                 `json:"readyReplicas"`
@@ -60,6 +61,7 @@ type GPUUnitRuntime struct {
 	LastSyncTime         time.Time                             `json:"lastSyncTime,omitempty"`
 	ServiceName          string                                `json:"serviceName,omitempty"`
 	AccessURL            string                                `json:"accessURL,omitempty"`
+	SSHStatus            runtimev1alpha1.GPUUnitSSHStatus      `json:"sshStatus,omitempty"`
 	Reason               string                                `json:"reason,omitempty"`
 	Message              string                                `json:"message,omitempty"`
 }

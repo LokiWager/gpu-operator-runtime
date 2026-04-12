@@ -21,7 +21,6 @@ import (
 // CreateGPUStorageRequest asks the service to persist a new RBD-backed workspace storage resource.
 type CreateGPUStorageRequest struct {
 	Name             string                                 `json:"name"`
-	Namespace        string                                 `json:"namespace,omitempty"`
 	Size             string                                 `json:"size"`
 	StorageClassName string                                 `json:"storageClassName,omitempty"`
 	Prepare          runtimev1alpha1.GPUStoragePrepareSpec  `json:"prepare,omitempty"`
@@ -47,15 +46,16 @@ func (s *Service) CreateGPUStorage(ctx context.Context, req CreateGPUStorageRequ
 	if err != nil {
 		return domain.GPUStorageRuntime{}, err
 	}
-	if err := s.ensureGPUStoragePrepareSourcesExist(ctx, req.Namespace, req.Name, req.Prepare); err != nil {
+	instanceNamespace := runtimev1alpha1.DefaultInstanceNamespace
+	if err := s.ensureGPUStoragePrepareSourcesExist(ctx, instanceNamespace, req.Name, req.Prepare); err != nil {
 		return domain.GPUStorageRuntime{}, err
 	}
 
 	var existing runtimev1alpha1.GPUStorage
-	err = s.operator.Get(ctx, types.NamespacedName{Namespace: req.Namespace, Name: req.Name}, &existing)
+	err = s.operator.Get(ctx, types.NamespacedName{Namespace: instanceNamespace, Name: req.Name}, &existing)
 	if err == nil {
 		return domain.GPUStorageRuntime{}, &ConflictError{
-			Message: fmt.Sprintf("gpu storage %s/%s already exists", req.Namespace, req.Name),
+			Message: fmt.Sprintf("gpu storage %s/%s already exists", instanceNamespace, req.Name),
 		}
 	}
 	if err != nil && !apierrors.IsNotFound(err) {
@@ -69,7 +69,7 @@ func (s *Service) CreateGPUStorage(ctx context.Context, req CreateGPUStorageRequ
 		},
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      req.Name,
-			Namespace: req.Namespace,
+			Namespace: instanceNamespace,
 			Labels: map[string]string{
 				runtimev1alpha1.LabelAppNameKey:   runtimev1alpha1.LabelAppNameValue,
 				runtimev1alpha1.LabelManagedByKey: runtimev1alpha1.LabelManagedByValue,
@@ -86,7 +86,7 @@ func (s *Service) CreateGPUStorage(ctx context.Context, req CreateGPUStorageRequ
 	if err := s.operator.Create(ctx, storage); err != nil {
 		if apierrors.IsAlreadyExists(err) {
 			return domain.GPUStorageRuntime{}, &ConflictError{
-				Message: fmt.Sprintf("gpu storage %s/%s already exists", req.Namespace, req.Name),
+				Message: fmt.Sprintf("gpu storage %s/%s already exists", instanceNamespace, req.Name),
 			}
 		}
 		return domain.GPUStorageRuntime{}, err
@@ -101,16 +101,13 @@ func (s *Service) ListGPUStorages(ctx context.Context, namespace string) ([]doma
 		return nil, &UnavailableError{Message: "operator client is not available"}
 	}
 
-	ns, err := normalizeNamespace(namespace)
+	ns, err := resolveRuntimeInstanceNamespace(namespace)
 	if err != nil {
 		return nil, err
 	}
 
 	var storages runtimev1alpha1.GPUStorageList
-	opts := []ctrlclient.ListOption{}
-	if ns != metav1.NamespaceAll {
-		opts = append(opts, ctrlclient.InNamespace(ns))
-	}
+	opts := []ctrlclient.ListOption{ctrlclient.InNamespace(ns)}
 	if err := s.operator.List(ctx, &storages, opts...); err != nil {
 		return nil, err
 	}
@@ -259,12 +256,6 @@ func normalizeCreateGPUStorageRequest(req CreateGPUStorageRequest) (CreateGPUSto
 	}
 	req.Name = name
 
-	namespace, err := normalizeGPUStorageNamespace(req.Namespace)
-	if err != nil {
-		return CreateGPUStorageRequest{}, err
-	}
-	req.Namespace = namespace
-
 	size, _, err := normalizeGPUStorageSize(req.Size)
 	if err != nil {
 		return CreateGPUStorageRequest{}, err
@@ -301,7 +292,11 @@ func normalizeUpdateGPUStorageRequest(req UpdateGPUStorageRequest) (UpdateGPUSto
 }
 
 func (s *Service) getGPUStorageObject(ctx context.Context, namespace, name string) (*runtimev1alpha1.GPUStorage, error) {
-	ns, trimmedName, err := normalizeNamespacedObject(namespace, name)
+	ns, err := resolveRuntimeInstanceNamespace(namespace)
+	if err != nil {
+		return nil, err
+	}
+	trimmedName, err := normalizeRuntimeResourceName(name)
 	if err != nil {
 		return nil, err
 	}

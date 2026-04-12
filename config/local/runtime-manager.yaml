@@ -1,0 +1,7 @@
+metricsBindAddress: "0"
+healthProbeBindAddress: ":8081"
+httpAddr: ":8080"
+reportInterval: "30s"
+leaderElect: false
+metricsSecure: true
+enableHTTP2: false

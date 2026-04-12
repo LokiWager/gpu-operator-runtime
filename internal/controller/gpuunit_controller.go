@@ -35,6 +35,7 @@ type GPUUnitReconciler struct {
 const gpuUnitControllerName = "gpuunit"
 
 var errStatusOnly = errors.New(statusOnlyMessage)
+var errUnitSSHSpecIncomplete = errors.New("ssh access is enabled but spec.ssh is incomplete")
 
 // +kubebuilder:rbac:groups=runtime.lokiwager.io,resources=gpuunits,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=runtime.lokiwager.io,resources=gpuunits/status,verbs=get;update;patch
@@ -42,6 +43,7 @@ var errStatusOnly = errors.New(statusOnlyMessage)
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile moves the observed cluster state toward GPUUnit spec.
 func (r *GPUUnitReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -62,7 +64,11 @@ func (r *GPUUnitReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 
 	if _, err := desiredUnitPodTemplate(instance, storageMounts); err != nil {
-		if updateErr := r.markUnitFailed(ctx, &instance, "", "", runtimev1alpha1.ReasonInvalidSpec, err.Error()); updateErr != nil {
+		reason := runtimev1alpha1.ReasonInvalidSpec
+		if errors.Is(err, errUnitSSHSpecIncomplete) {
+			reason = runtimev1alpha1.ReasonSSHConfigInvalid
+		}
+		if updateErr := r.markUnitFailed(ctx, &instance, "", "", reason, err.Error()); updateErr != nil {
 			return ctrl.Result{}, updateErr
 		}
 		return ctrl.Result{}, nil
@@ -99,6 +105,14 @@ func (r *GPUUnitReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		serviceChanged = changed
 	}
 
+	sshConfigChanged, err := r.reconcileGPUUnitSSHAuthorizedKeysConfig(ctx, &instance)
+	if err != nil {
+		if updateErr := r.markUnitFailed(ctx, &instance, serviceName, accessURL, runtimev1alpha1.ReasonUnitDeploymentSyncFailed, err.Error()); updateErr != nil {
+			return ctrl.Result{}, updateErr
+		}
+		return ctrl.Result{}, err
+	}
+
 	dep, deploymentChanged, err := r.reconcileGPUUnitDeployment(ctx, &instance, storageMounts)
 	if err != nil {
 		if errors.Is(err, errStatusOnly) {
@@ -110,7 +124,7 @@ func (r *GPUUnitReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, err
 	}
 
-	podFailureMessage, err := r.findGPUUnitPodFailureMessage(ctx, &instance)
+	podFailureMessage, sshFailureMessage, err := r.inspectGPUUnitPods(ctx, &instance)
 	if err != nil {
 		if updateErr := r.markUnitFailed(ctx, &instance, serviceName, accessURL, runtimev1alpha1.ReasonPodStatusSyncFailed, err.Error()); updateErr != nil {
 			return ctrl.Result{}, updateErr
@@ -118,12 +132,22 @@ func (r *GPUUnitReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, err
 	}
 
-	next := buildGPUUnitStatus(instance, dep.Status.AvailableReplicas, serviceName, accessURL, podFailureMessage, storageReady, storageWaitMessage)
+	sshProgress := buildUnitSSHProgress(instance, dep.Status.AvailableReplicas, sshFailureMessage)
+	next := buildGPUUnitStatus(
+		instance,
+		dep.Status.AvailableReplicas,
+		serviceName,
+		accessURL,
+		podFailureMessage,
+		storageReady,
+		storageWaitMessage,
+		sshProgress,
+	)
 	if err := r.updateGPUUnitStatus(ctx, &instance, next); err != nil {
 		return ctrl.Result{}, err
 	}
 
-	if serviceChanged || deploymentChanged || !storageReady {
+	if serviceChanged || sshConfigChanged || deploymentChanged || !storageReady {
 		return ctrl.Result{RequeueAfter: requeueAfterUpdate}, nil
 	}
 	return ctrl.Result{}, nil
@@ -138,6 +162,7 @@ func (r *GPUUnitReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&runtimev1alpha1.GPUUnit{}).
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
+		Owns(&corev1.ConfigMap{}).
 		Named(gpuUnitControllerName).
 		Complete(r)
 }
@@ -154,7 +179,11 @@ func (r *GPUUnitReconciler) reconcileGPUUnitDeployment(ctx context.Context, inst
 
 		newDep, err := desiredUnitDeployment(*instance, storageMounts)
 		if err != nil {
-			if markErr := r.markUnitFailed(ctx, instance, instance.Status.ServiceName, instance.Status.AccessURL, runtimev1alpha1.ReasonInvalidSpec, err.Error()); markErr != nil {
+			reason := runtimev1alpha1.ReasonInvalidSpec
+			if errors.Is(err, errUnitSSHSpecIncomplete) {
+				reason = runtimev1alpha1.ReasonSSHConfigInvalid
+			}
+			if markErr := r.markUnitFailed(ctx, instance, instance.Status.ServiceName, instance.Status.AccessURL, reason, err.Error()); markErr != nil {
 				return nil, false, markErr
 			}
 			return nil, false, errStatusOnly
@@ -170,7 +199,11 @@ func (r *GPUUnitReconciler) reconcileGPUUnitDeployment(ctx context.Context, inst
 
 	expectedTemplate, err := desiredUnitPodTemplate(*instance, storageMounts)
 	if err != nil {
-		if markErr := r.markUnitFailed(ctx, instance, instance.Status.ServiceName, instance.Status.AccessURL, runtimev1alpha1.ReasonInvalidSpec, err.Error()); markErr != nil {
+		reason := runtimev1alpha1.ReasonInvalidSpec
+		if errors.Is(err, errUnitSSHSpecIncomplete) {
+			reason = runtimev1alpha1.ReasonSSHConfigInvalid
+		}
+		if markErr := r.markUnitFailed(ctx, instance, instance.Status.ServiceName, instance.Status.AccessURL, reason, err.Error()); markErr != nil {
 			return nil, false, markErr
 		}
 		return nil, false, errStatusOnly
@@ -266,14 +299,19 @@ func (r *GPUUnitReconciler) markUnitFailed(ctx context.Context, instance *runtim
 	if lifecycleForUnit(*instance) == runtimev1alpha1.LifecycleStock {
 		next.ServiceName = ""
 		next.AccessURL = ""
+	} else if instance.Spec.SSH.Enabled {
+		sshProgress := buildUnitSSHProgress(*instance, 0, "")
+		sshProgress.Phase = runtimev1alpha1.UnitSSHPhaseFailed
+		sshProgress.Reason = firstNonEmpty(reason, runtimev1alpha1.ReasonUnitSSHFailed)
+		sshProgress.Message = firstNonEmpty(message, sshProgress.AccessCommand, runtimev1alpha1.StatusMessageUnitSSHPending)
+		next.SSH = gpuUnitSSHStatusFromProgress(sshProgress)
+		apimeta.SetStatusCondition(&next.Conditions, buildUnitSSHCondition(instance.Generation, sshProgress))
 	}
-	apimeta.SetStatusCondition(&next.Conditions, metav1.Condition{
-		Type:               runtimev1alpha1.ConditionReady,
-		Status:             metav1.ConditionFalse,
-		ObservedGeneration: instance.Generation,
-		Reason:             reason,
-		Message:            message,
-	})
+	apimeta.SetStatusCondition(&next.Conditions, statusConditionFromDecision(runtimev1alpha1.ConditionReady, instance.Generation, conditionDecision{
+		Status:  metav1.ConditionFalse,
+		Reason:  reason,
+		Message: message,
+	}))
 	return r.updateGPUUnitStatus(ctx, instance, next)
 }
 
@@ -302,8 +340,8 @@ func normalizeGPUUnitStatusForCompare(status runtimev1alpha1.GPUUnitStatus) runt
 	return status
 }
 
-// findGPUUnitPodFailureMessage scans owned pods for the first meaningful startup failure.
-func (r *GPUUnitReconciler) findGPUUnitPodFailureMessage(ctx context.Context, instance *runtimev1alpha1.GPUUnit) (string, error) {
+// inspectGPUUnitPods scans owned pods for the first meaningful workload and SSH failures.
+func (r *GPUUnitReconciler) inspectGPUUnitPods(ctx context.Context, instance *runtimev1alpha1.GPUUnit) (string, string, error) {
 	var pods corev1.PodList
 	if err := r.List(
 		ctx,
@@ -311,14 +349,26 @@ func (r *GPUUnitReconciler) findGPUUnitPodFailureMessage(ctx context.Context, in
 		client.InNamespace(instance.Namespace),
 		client.MatchingLabels{runtimev1alpha1.LabelUnitKey: instance.Name},
 	); err != nil {
-		return "", err
+		return "", "", err
 	}
 	for i := range pods.Items {
 		if message, ok := podFailureMessage(pods.Items[i]); ok {
-			return message, nil
+			sshMessage, _ := namedContainerFailureMessage(
+				pods.Items[i],
+				runtimev1alpha1.UnitSSHContainerName,
+				runtimev1alpha1.UnitSSHFRPContainerName,
+			)
+			return message, sshMessage, nil
+		}
+		if sshMessage, ok := namedContainerFailureMessage(
+			pods.Items[i],
+			runtimev1alpha1.UnitSSHContainerName,
+			runtimev1alpha1.UnitSSHFRPContainerName,
+		); ok {
+			return "", sshMessage, nil
 		}
 	}
-	return "", nil
+	return "", "", nil
 }
 
 // resolveGPUUnitStorageMounts loads referenced storage objects and reports whether they are ready.

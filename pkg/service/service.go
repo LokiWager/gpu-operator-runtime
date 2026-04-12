@@ -18,7 +18,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/kubernetes"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -242,64 +241,6 @@ func (s *Service) normalizeCreateStockUnitsRequest(req CreateStockUnitsRequest) 
 		return CreateStockUnitsRequest{}, "", err
 	}
 	return req, requestHash, nil
-}
-
-// normalizeTemplate validates the user-controlled pod slice used by active units.
-func normalizeTemplate(t runtimev1alpha1.GPUUnitTemplate) (runtimev1alpha1.GPUUnitTemplate, error) {
-	seenEnvNames := map[string]struct{}{}
-	for i := range t.Envs {
-		t.Envs[i].Name = strings.TrimSpace(t.Envs[i].Name)
-		if t.Envs[i].Name == "" {
-			return runtimev1alpha1.GPUUnitTemplate{}, &ValidationError{Message: "template env name is required"}
-		}
-		if errs := validation.IsEnvVarName(t.Envs[i].Name); len(errs) > 0 {
-			return runtimev1alpha1.GPUUnitTemplate{}, &ValidationError{
-				Message: fmt.Sprintf("template env %q is invalid: %s", t.Envs[i].Name, strings.Join(errs, ", ")),
-			}
-		}
-		if _, exists := seenEnvNames[t.Envs[i].Name]; exists {
-			return runtimev1alpha1.GPUUnitTemplate{}, &ValidationError{
-				Message: fmt.Sprintf("template env %q is duplicated", t.Envs[i].Name),
-			}
-		}
-		seenEnvNames[t.Envs[i].Name] = struct{}{}
-	}
-
-	seenPortNames := map[string]struct{}{}
-	seenPortNumbers := map[int32]struct{}{}
-	for i := range t.Ports {
-		t.Ports[i].Name = strings.TrimSpace(t.Ports[i].Name)
-		if t.Ports[i].Name == "" {
-			return runtimev1alpha1.GPUUnitTemplate{}, &ValidationError{Message: "template port name is required"}
-		}
-		if errs := validation.IsValidPortName(t.Ports[i].Name); len(errs) > 0 {
-			return runtimev1alpha1.GPUUnitTemplate{}, &ValidationError{
-				Message: fmt.Sprintf("template port name %q is invalid: %s", t.Ports[i].Name, strings.Join(errs, ", ")),
-			}
-		}
-		if t.Ports[i].Port <= 0 || t.Ports[i].Port > 65535 {
-			return runtimev1alpha1.GPUUnitTemplate{}, &ValidationError{
-				Message: fmt.Sprintf("template port %d is out of range", t.Ports[i].Port),
-			}
-		}
-		if t.Ports[i].Protocol == "" {
-			t.Ports[i].Protocol = "TCP"
-		}
-		if _, exists := seenPortNames[t.Ports[i].Name]; exists {
-			return runtimev1alpha1.GPUUnitTemplate{}, &ValidationError{
-				Message: fmt.Sprintf("template port name %q is duplicated", t.Ports[i].Name),
-			}
-		}
-		if _, exists := seenPortNumbers[t.Ports[i].Port]; exists {
-			return runtimev1alpha1.GPUUnitTemplate{}, &ValidationError{
-				Message: fmt.Sprintf("template port %d is duplicated", t.Ports[i].Port),
-			}
-		}
-		seenPortNames[t.Ports[i].Name] = struct{}{}
-		seenPortNumbers[t.Ports[i].Port] = struct{}{}
-	}
-
-	return t, nil
 }
 
 // hashCreateStockUnitsRequest creates the stable payload hash used for idempotency checks.

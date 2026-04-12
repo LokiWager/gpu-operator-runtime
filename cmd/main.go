@@ -33,6 +33,7 @@ import (
 	runtimev1alpha1 "github.com/loki/gpu-operator-runtime/api/v1alpha1"
 	"github.com/loki/gpu-operator-runtime/internal/controller"
 	"github.com/loki/gpu-operator-runtime/pkg/api"
+	appconfig "github.com/loki/gpu-operator-runtime/pkg/config"
 	"github.com/loki/gpu-operator-runtime/pkg/jobs"
 	"github.com/loki/gpu-operator-runtime/pkg/service"
 )
@@ -51,29 +52,28 @@ func init() {
 //
 // nolint:gocyclo
 func main() {
-	var metricsAddr string
-	var probeAddr string
-	var httpAddr string
-	var reportInterval time.Duration
-	var enableLeaderElection bool
-	var secureMetrics bool
-	var enableHTTP2 bool
+	var configPath string
 	var tlsOpts []func(*tls.Config)
 
-	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to.")
-	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
-	flag.StringVar(&httpAddr, "http-addr", ":8080", "The address the API server binds to.")
-	flag.DurationVar(&reportInterval, "report-interval", 30*time.Second, "Runtime status report interval.")
-	flag.BoolVar(&enableLeaderElection, "leader-elect", false, "Enable leader election for controller manager.")
-	flag.BoolVar(&secureMetrics, "metrics-secure", true, "Serve metrics via HTTPS.")
-	flag.BoolVar(&enableHTTP2, "enable-http2", false, "Enable HTTP/2 for metrics endpoint.")
+	flag.StringVar(&configPath, "config", "", "Path to the manager YAML configuration file.")
 	opts := zap.Options{Development: true}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
-	if !enableHTTP2 {
+	cfg, err := appconfig.LoadManagerConfig(configPath)
+	if err != nil {
+		setupLog.Error(err, "Failed to load manager config", "config", configPath)
+		os.Exit(1)
+	}
+	reportInterval, err := cfg.ReportIntervalDuration()
+	if err != nil {
+		setupLog.Error(err, "Invalid report interval in manager config", "config", configPath)
+		os.Exit(1)
+	}
+
+	if !cfg.EnableHTTP2 {
 		tlsOpts = append(tlsOpts, func(c *tls.Config) {
 			setupLog.Info("Disabling HTTP/2")
 			c.NextProtos = []string{"http/1.1"}
@@ -94,12 +94,12 @@ func main() {
 	mgr, err := ctrl.NewManager(restConfig, ctrl.Options{
 		Scheme: scheme,
 		Metrics: metricsserver.Options{
-			BindAddress:   metricsAddr,
-			SecureServing: secureMetrics,
+			BindAddress:   cfg.MetricsBindAddress,
+			SecureServing: cfg.MetricsSecure,
 			TLSOpts:       tlsOpts,
 		},
-		HealthProbeBindAddress: probeAddr,
-		LeaderElection:         enableLeaderElection,
+		HealthProbeBindAddress: cfg.HealthProbeBindAddress,
+		LeaderElection:         cfg.LeaderElect,
 		LeaderElectionID:       "9d4c4758.lokiwager.io",
 	})
 	if err != nil {
@@ -133,7 +133,7 @@ func main() {
 
 	httpHandler := api.NewServer(svc, appLogger)
 	httpServer := &http.Server{
-		Addr:              httpAddr,
+		Addr:              cfg.HTTPAddr,
 		Handler:           httpHandler,
 		ReadHeaderTimeout: 5 * time.Second,
 	}

@@ -75,6 +75,56 @@ spec:
                 description: SpecName is the requested runtime flavor, for example
                   "g1.1".
                 type: string
+              ssh:
+                description: SSH declares whether the platform should inject a shell
+                  sidecar and FRP tunnel for user access.
+                properties:
+                  authorizedKeys:
+                    items:
+                      type: string
+                    type: array
+                  clientDomain:
+                    type: string
+                  clientName:
+                    type: string
+                  connectHost:
+                    description: ConnectHost is the user-facing HTTP CONNECT proxy
+                      host used in the ready-to-run SSH command.
+                    type: string
+                  connectPort:
+                    format: int32
+                    maximum: 65535
+                    minimum: 1
+                    type: integer
+                  domainSuffix:
+                    description: DomainSuffix is combined with name + namespace when
+                      ClientDomain is omitted.
+                    type: string
+                  enabled:
+                    type: boolean
+                  frpImage:
+                    type: string
+                  image:
+                    type: string
+                  port:
+                    format: int32
+                    maximum: 65535
+                    minimum: 1
+                    type: integer
+                  serverAddr:
+                    description: ServerAddr is the FRP server address that the injected
+                      sidecar dials.
+                    type: string
+                  serverPort:
+                    format: int32
+                    maximum: 65535
+                    minimum: 1
+                    type: integer
+                  token:
+                    type: string
+                  username:
+                    type: string
+                type: object
               storageMounts:
                 description: StorageMounts declares the persistent storage attachments
                   mounted into the runtime.
@@ -217,6 +267,24 @@ spec:
                 type: integer
               serviceName:
                 type: string
+              ssh:
+                description: GPUUnitSSHStatus reports the current SSH exposure state
+                  for one active runtime unit.
+                properties:
+                  accessCommand:
+                    type: string
+                  connectHost:
+                    type: string
+                  connectPort:
+                    format: int32
+                    type: integer
+                  phase:
+                    type: string
+                  targetHost:
+                    type: string
+                  username:
+                    type: string
+                type: object
             type: object
         type: object
     served: true

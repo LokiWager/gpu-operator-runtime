@@ -235,6 +235,94 @@ func TestService_CreateGPUUnit_RequiresReferencedStorageToExist(t *testing.T) {
 	}
 }
 
+func TestService_CreateGPUUnit_NormalizesSSHSpec(t *testing.T) {
+	svc, ctx, cancel := newOperatorService(t)
+	defer cancel()
+
+	seedStockUnit(t, ctx, svc, stockSeedOptions{
+		unitName:     "stock-g1-ssh-001",
+		specName:     "g1.1",
+		phase:        runtimev1alpha1.PhaseReady,
+		readyMessage: runtimev1alpha1.StatusMessageStockReady,
+	})
+
+	unit, created, err := svc.CreateGPUUnit(ctx, CreateGPUUnitRequest{
+		OperationID: "gpu-create-ssh-1",
+		Name:        "demo-ssh",
+		SpecName:    "g1.1",
+		Image:       "pytorch:2.6",
+		SSH: runtimev1alpha1.GPUUnitSSHSpec{
+			Enabled:      true,
+			Username:     "Runtime",
+			ServerAddr:   "frps.internal",
+			DomainSuffix: "ssh.example.com",
+			AuthorizedKeys: []string{
+				"  ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA== demo@example  ",
+				"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA== demo@example",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create gpu unit with ssh error: %v", err)
+	}
+	if !created {
+		t.Fatalf("expected create to persist a new gpu unit")
+	}
+	if !unit.SSH.Enabled {
+		t.Fatalf("expected ssh to be enabled")
+	}
+	if unit.SSH.Username != "runtime" {
+		t.Fatalf("expected ssh username runtime, got %s", unit.SSH.Username)
+	}
+	if len(unit.SSH.AuthorizedKeys) != 1 {
+		t.Fatalf("expected deduped authorized keys, got %+v", unit.SSH.AuthorizedKeys)
+	}
+	if unit.SSH.ServerPort != runtimev1alpha1.DefaultUnitSSHFRPPort {
+		t.Fatalf("expected default frp server port %d, got %d", runtimev1alpha1.DefaultUnitSSHFRPPort, unit.SSH.ServerPort)
+	}
+	if unit.SSH.ConnectHost != "frps.internal" {
+		t.Fatalf("expected connect host frps.internal, got %s", unit.SSH.ConnectHost)
+	}
+	if unit.SSH.ConnectPort != runtimev1alpha1.DefaultUnitSSHProxyPort {
+		t.Fatalf("expected default proxy port %d, got %d", runtimev1alpha1.DefaultUnitSSHProxyPort, unit.SSH.ConnectPort)
+	}
+	if unit.SSH.ClientDomain != "demo-ssh.runtime-instance.ssh.example.com" {
+		t.Fatalf("expected generated client domain, got %s", unit.SSH.ClientDomain)
+	}
+}
+
+func TestService_CreateGPUUnit_RejectsSSHWithoutKeys(t *testing.T) {
+	svc, ctx, cancel := newOperatorService(t)
+	defer cancel()
+
+	seedStockUnit(t, ctx, svc, stockSeedOptions{
+		unitName:     "stock-g1-ssh-002",
+		specName:     "g1.1",
+		phase:        runtimev1alpha1.PhaseReady,
+		readyMessage: runtimev1alpha1.StatusMessageStockReady,
+	})
+
+	_, _, err := svc.CreateGPUUnit(ctx, CreateGPUUnitRequest{
+		OperationID: "gpu-create-ssh-2",
+		Name:        "demo-ssh",
+		SpecName:    "g1.1",
+		Image:       "pytorch:2.6",
+		SSH: runtimev1alpha1.GPUUnitSSHSpec{
+			Enabled:      true,
+			ServerAddr:   "frps.internal",
+			DomainSuffix: "ssh.example.com",
+		},
+	})
+	if err == nil {
+		t.Fatalf("expected ssh validation error")
+	}
+
+	var validationErr *ValidationError
+	if !errors.As(err, &validationErr) {
+		t.Fatalf("expected validation error, got %T", err)
+	}
+}
+
 func TestService_UpdateGPUUnit_StorageMounts(t *testing.T) {
 	svc, ctx, cancel := newOperatorService(t)
 	defer cancel()

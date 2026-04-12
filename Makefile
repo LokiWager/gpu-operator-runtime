@@ -1,4 +1,5 @@
 APP_NAME := manager
+PROXY_APP_NAME := runtime-proxy
 export GOTOOLCHAIN := go1.26.0
 
 GOFILES := $(shell find . -type f -name '*.go' -not -path './vendor/*')
@@ -11,11 +12,12 @@ SWAG_VERSION ?= v1.16.4
 .PHONY: run build test test-race vet fmt fmt-check tidy manifests generate swagger controller-gen swag ci
 
 run:
-	go run ./cmd/main.go
+	go run ./cmd/main.go --config config/local/runtime-manager.yaml
 
 build:
 	mkdir -p bin
 	go build -o bin/$(APP_NAME) ./cmd/main.go
+	go build -o bin/$(PROXY_APP_NAME) ./cmd/runtime-proxy
 
 test:
 	go test ./...
@@ -47,7 +49,7 @@ generate: controller-gen
 	"$(CONTROLLER_GEN)" object:headerFile="hack/boilerplate.go.txt" paths="./..."
 
 swagger: swag
-	"$(SWAG)" init -g doc.go -d pkg/api,pkg/service,pkg/domain,api/v1alpha1 -o docs/swagger --parseDependency --parseInternal
+	"$(SWAG)" init -g doc.go -d pkg/api,pkg/service,pkg/contract,pkg/domain,api/v1alpha1 -o docs/swagger --parseDependency --parseInternal
 
 controller-gen:
 	@test -s "$(CONTROLLER_GEN)" || { \

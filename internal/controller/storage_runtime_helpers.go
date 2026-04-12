@@ -5,7 +5,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"path"
 	"reflect"
+	"strconv"
 	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -164,12 +166,12 @@ func storageAccessorPendingProgress(changed bool) storageAccessorProgress {
 }
 
 func storageAccessorProgressFromDeployment(
-	namespace string,
+	storage runtimev1alpha1.GPUStorage,
 	serviceName string,
 	availableReplicas int32,
 	changed bool,
 ) storageAccessorProgress {
-	accessURL := storageAccessorURL(namespace, serviceName)
+	accessURL := storageAccessorURL(storage.Namespace, serviceName, storage.Name)
 	if availableReplicas > 0 {
 		return newStorageAccessorProgress(
 			runtimev1alpha1.StorageAccessorPhaseReady,
@@ -213,11 +215,11 @@ func storagePrepareJobName(storageName, digest string) string {
 }
 
 func storageAccessorDeploymentName(storageName string) string {
-	return clampName("storage-accessor-"+storageName, 63)
+	return runtimev1alpha1.StorageAccessorServiceResourceName(storageName)
 }
 
 func storageAccessorServiceName(storageName string) string {
-	return clampName("storage-accessor-"+storageName, 63)
+	return runtimev1alpha1.StorageAccessorServiceResourceName(storageName)
 }
 
 func clampName(name string, limit int) string {
@@ -255,7 +257,7 @@ func desiredGPUStoragePrepareJob(
 	}}
 
 	if storage.Spec.Prepare.FromStorageName != "" {
-		container.Image = runtimev1alpha1.DefaultStorageAccessorImage
+		container.Image = runtimev1alpha1.DefaultStoragePrepareCopyImage
 		container.Command = []string{"sh", "-c"}
 		container.Args = []string{
 			fmt.Sprintf(
@@ -311,6 +313,7 @@ func desiredGPUStorageAccessorDeployment(storage runtimev1alpha1.GPUStorage, cla
 	name := storageAccessorDeploymentName(storage.Name)
 	labels := storageOwnedLabels(storage.Name)
 	labels["runtime.lokiwager.io/storage-accessor"] = storage.Name
+	proxyPath := storageProxyBasePath(storage.Namespace, storage.Name)
 
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -335,9 +338,17 @@ func desiredGPUStorageAccessorDeployment(storage runtimev1alpha1.GPUStorage, cla
 						Name:            runtimev1alpha1.StorageAccessorContainerName,
 						Image:           runtimev1alpha1.DefaultStorageAccessorImage,
 						ImagePullPolicy: corev1.PullIfNotPresent,
-						Command:         []string{"sh", "-c"},
+						Command:         []string{"dufs"},
 						Args: []string{
-							fmt.Sprintf("mkdir -p /data && exec busybox httpd -f -p %d -h /data", runtimev1alpha1.DefaultStorageAccessorPort),
+							"/data",
+							"--bind",
+							"0.0.0.0",
+							"--port",
+							strconv.Itoa(int(runtimev1alpha1.DefaultStorageAccessorPort)),
+							"--path-prefix",
+							proxyPath,
+							"--allow-search",
+							"--allow-archive",
 						},
 						Ports: []corev1.ContainerPort{{
 							Name:          "http",
@@ -391,8 +402,22 @@ func desiredGPUStorageAccessorService(storage runtimev1alpha1.GPUStorage) *corev
 	}
 }
 
-func storageAccessorURL(namespace, serviceName string) string {
-	return fmt.Sprintf("http://%s.%s.svc.cluster.local:%d", serviceName, namespace, runtimev1alpha1.DefaultStorageAccessorPort)
+func storageAccessorURL(namespace, serviceName, storageName string) string {
+	return fmt.Sprintf(
+		"http://%s.%s.svc.cluster.local:%d%s",
+		serviceName,
+		namespace,
+		runtimev1alpha1.DefaultStorageAccessorPort,
+		storageProxyPath(namespace, storageName),
+	)
+}
+
+func storageProxyPath(namespace, storageName string) string {
+	return storageProxyBasePath(namespace, storageName) + "/"
+}
+
+func storageProxyBasePath(namespace, storageName string) string {
+	return path.Join(runtimev1alpha1.DefaultStorageProxyPathPrefix, namespace, storageName)
 }
 
 func storageOwnedLabels(storageName string) map[string]string {

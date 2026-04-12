@@ -1,14 +1,9 @@
 package service
 
-// ValidationError reports that the caller provided an invalid request.
-type ValidationError struct {
-	Message string
-}
+import "github.com/loki/gpu-operator-runtime/pkg/contract"
 
-// Error implements the error interface.
-func (e *ValidationError) Error() string {
-	return e.Message
-}
+// ValidationError reports that the caller provided an invalid request.
+type ValidationError = contract.ValidationError
 
 // ConflictError reports that the request collides with existing state.
 type ConflictError struct {

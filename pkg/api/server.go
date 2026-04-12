@@ -11,6 +11,7 @@ import (
 	echoSwagger "github.com/swaggo/echo-swagger"
 
 	_ "github.com/loki/gpu-operator-runtime/docs/swagger"
+	"github.com/loki/gpu-operator-runtime/pkg/contract"
 	"github.com/loki/gpu-operator-runtime/pkg/service"
 )
 
@@ -72,18 +73,16 @@ func (s *Server) routes() {
 
 // handleListGPUStorages godoc
 // @Summary List GPU storages
-// @Description List RBD-backed GPU storage resources, including prepare-job and accessor status, optionally filtered by namespace.
+// @Description List RBD-backed GPU storage resources in the shared runtime instance namespace, including prepare-job and accessor status.
 // @Tags storage
 // @Produce json
-// @Param namespace query string false "Namespace filter"
 // @Success 200 {object} GPUStorageListResponse
 // @Failure 400 {object} ErrorResponse
 // @Failure 503 {object} ErrorResponse
 // @Failure 500 {object} ErrorResponse
 // @Router /gpu-storages [get]
 func (s *Server) handleListGPUStorages(c echo.Context) error {
-	namespace := c.QueryParam("namespace")
-	items, err := s.service.ListGPUStorages(c.Request().Context(), namespace)
+	items, err := s.service.ListGPUStorages(c.Request().Context(), "")
 	if err != nil {
 		return writeServiceError(c, err, "list_gpustorages_failed")
 	}
@@ -122,14 +121,13 @@ func (s *Server) handleCreateGPUStorage(c echo.Context) error {
 // @Tags storage
 // @Produce json
 // @Param name path string true "GPU storage name"
-// @Param namespace query string false "Namespace filter"
 // @Success 200 {object} GPUStorageResponse
 // @Failure 400 {object} ErrorResponse
 // @Failure 404 {object} ErrorResponse
 // @Failure 500 {object} ErrorResponse
 // @Router /gpu-storages/{name} [get]
 func (s *Server) handleGetGPUStorage(c echo.Context) error {
-	storage, err := s.service.GetGPUStorage(c.Request().Context(), c.QueryParam("namespace"), c.Param("name"))
+	storage, err := s.service.GetGPUStorage(c.Request().Context(), "", c.Param("name"))
 	if err != nil {
 		return writeServiceError(c, err, "gpustorage_not_found")
 	}
@@ -143,7 +141,6 @@ func (s *Server) handleGetGPUStorage(c echo.Context) error {
 // @Accept json
 // @Produce json
 // @Param name path string true "GPU storage name"
-// @Param namespace query string false "Namespace filter"
 // @Param request body service.UpdateGPUStorageRequest true "Update GPU storage request"
 // @Success 200 {object} GPUStorageResponse
 // @Failure 400 {object} ErrorResponse
@@ -156,7 +153,7 @@ func (s *Server) handleUpdateGPUStorage(c echo.Context) error {
 		return writeError(c, http.StatusBadRequest, "invalid_request", err.Error())
 	}
 
-	storage, err := s.service.UpdateGPUStorage(c.Request().Context(), c.QueryParam("namespace"), c.Param("name"), req)
+	storage, err := s.service.UpdateGPUStorage(c.Request().Context(), "", c.Param("name"), req)
 	if err != nil {
 		return writeServiceError(c, err, "update_gpustorage_failed")
 	}
@@ -169,14 +166,13 @@ func (s *Server) handleUpdateGPUStorage(c echo.Context) error {
 // @Tags storage
 // @Produce json
 // @Param name path string true "GPU storage name"
-// @Param namespace query string false "Namespace filter"
 // @Success 200 {object} GPUStorageResponse
 // @Failure 400 {object} ErrorResponse
 // @Failure 404 {object} ErrorResponse
 // @Failure 500 {object} ErrorResponse
 // @Router /gpu-storages/{name}/recover [post]
 func (s *Server) handleRecoverGPUStorage(c echo.Context) error {
-	storage, err := s.service.RecoverGPUStorage(c.Request().Context(), c.QueryParam("namespace"), c.Param("name"))
+	storage, err := s.service.RecoverGPUStorage(c.Request().Context(), "", c.Param("name"))
 	if err != nil {
 		return writeServiceError(c, err, "recover_gpustorage_failed")
 	}
@@ -189,7 +185,6 @@ func (s *Server) handleRecoverGPUStorage(c echo.Context) error {
 // @Tags storage
 // @Produce json
 // @Param name path string true "GPU storage name"
-// @Param namespace query string false "Namespace filter"
 // @Success 204 {string} string ""
 // @Failure 400 {object} ErrorResponse
 // @Failure 404 {object} ErrorResponse
@@ -197,7 +192,7 @@ func (s *Server) handleRecoverGPUStorage(c echo.Context) error {
 // @Failure 500 {object} ErrorResponse
 // @Router /gpu-storages/{name} [delete]
 func (s *Server) handleDeleteGPUStorage(c echo.Context) error {
-	if err := s.service.DeleteGPUStorage(c.Request().Context(), c.QueryParam("namespace"), c.Param("name")); err != nil {
+	if err := s.service.DeleteGPUStorage(c.Request().Context(), "", c.Param("name")); err != nil {
 		return writeServiceError(c, err, "delete_gpustorage_failed")
 	}
 	return c.NoContent(http.StatusNoContent)
@@ -208,15 +203,13 @@ func (s *Server) handleDeleteGPUStorage(c echo.Context) error {
 // @Description List active GPU unit resources that were created by consuming stock units.
 // @Tags runtime
 // @Produce json
-// @Param namespace query string false "Namespace filter"
 // @Success 200 {object} GPUUnitListResponse
 // @Failure 400 {object} ErrorResponse
 // @Failure 503 {object} ErrorResponse
 // @Failure 500 {object} ErrorResponse
 // @Router /gpu-units [get]
 func (s *Server) handleListGPUUnits(c echo.Context) error {
-	namespace := c.QueryParam("namespace")
-	items, err := s.service.ListGPUUnits(c.Request().Context(), namespace)
+	items, err := s.service.ListGPUUnits(c.Request().Context(), "")
 	if err != nil {
 		return writeServiceError(c, err, "list_gpuunits_failed")
 	}
@@ -229,7 +222,7 @@ func (s *Server) handleListGPUUnits(c echo.Context) error {
 // @Tags runtime
 // @Accept json
 // @Produce json
-// @Param request body service.CreateGPUUnitRequest true "Create GPU unit request"
+// @Param request body contract.CreateGPUUnitRequest true "Create GPU unit request"
 // @Success 200 {object} GPUUnitResponse
 // @Success 201 {object} GPUUnitResponse
 // @Failure 400 {object} ErrorResponse
@@ -241,6 +234,10 @@ func (s *Server) handleCreateGPUUnit(c echo.Context) error {
 	var req service.CreateGPUUnitRequest
 	if err := c.Bind(&req); err != nil {
 		return writeError(c, http.StatusBadRequest, "invalid_request", err.Error())
+	}
+	req, err := contract.NormalizeCreateGPUUnitRequest(req)
+	if err != nil {
+		return writeServiceError(c, err, "invalid_request")
 	}
 
 	instance, created, err := s.service.CreateGPUUnit(c.Request().Context(), req)
@@ -259,14 +256,13 @@ func (s *Server) handleCreateGPUUnit(c echo.Context) error {
 // @Tags runtime
 // @Produce json
 // @Param name path string true "GPU unit name"
-// @Param namespace query string false "Namespace filter"
 // @Success 200 {object} GPUUnitResponse
 // @Failure 400 {object} ErrorResponse
 // @Failure 404 {object} ErrorResponse
 // @Failure 500 {object} ErrorResponse
 // @Router /gpu-units/{name} [get]
 func (s *Server) handleGetGPUUnit(c echo.Context) error {
-	instance, err := s.service.GetGPUUnit(c.Request().Context(), c.QueryParam("namespace"), c.Param("name"))
+	instance, err := s.service.GetGPUUnit(c.Request().Context(), "", c.Param("name"))
 	if err != nil {
 		return writeServiceError(c, err, "gpuunit_not_found")
 	}
@@ -280,20 +276,28 @@ func (s *Server) handleGetGPUUnit(c echo.Context) error {
 // @Accept json
 // @Produce json
 // @Param name path string true "GPU unit name"
-// @Param namespace query string false "Namespace filter"
-// @Param request body service.UpdateGPUUnitRequest true "Update GPU unit request"
+// @Param request body contract.UpdateGPUUnitRequest true "Update GPU unit request"
 // @Success 200 {object} GPUUnitResponse
 // @Failure 400 {object} ErrorResponse
 // @Failure 404 {object} ErrorResponse
 // @Failure 500 {object} ErrorResponse
 // @Router /gpu-units/{name} [put]
 func (s *Server) handleUpdateGPUUnit(c echo.Context) error {
+	namespace, name, err := contract.NormalizeGPUUnitObjectKey("", c.Param("name"))
+	if err != nil {
+		return writeServiceError(c, err, "invalid_request")
+	}
+
 	var req service.UpdateGPUUnitRequest
 	if err := c.Bind(&req); err != nil {
 		return writeError(c, http.StatusBadRequest, "invalid_request", err.Error())
 	}
+	req, err = contract.NormalizeUpdateGPUUnitRequest(name, namespace, req)
+	if err != nil {
+		return writeServiceError(c, err, "invalid_request")
+	}
 
-	instance, err := s.service.UpdateGPUUnit(c.Request().Context(), c.QueryParam("namespace"), c.Param("name"), req)
+	instance, err := s.service.UpdateGPUUnit(c.Request().Context(), namespace, name, req)
 	if err != nil {
 		return writeServiceError(c, err, "update_gpuunit_failed")
 	}
@@ -306,14 +310,13 @@ func (s *Server) handleUpdateGPUUnit(c echo.Context) error {
 // @Tags runtime
 // @Produce json
 // @Param name path string true "GPU unit name"
-// @Param namespace query string false "Namespace filter"
 // @Success 204 {string} string ""
 // @Failure 400 {object} ErrorResponse
 // @Failure 404 {object} ErrorResponse
 // @Failure 500 {object} ErrorResponse
 // @Router /gpu-units/{name} [delete]
 func (s *Server) handleDeleteGPUUnit(c echo.Context) error {
-	if err := s.service.DeleteGPUUnit(c.Request().Context(), c.QueryParam("namespace"), c.Param("name")); err != nil {
+	if err := s.service.DeleteGPUUnit(c.Request().Context(), "", c.Param("name")); err != nil {
 		return writeServiceError(c, err, "delete_gpuunit_failed")
 	}
 	return c.NoContent(http.StatusNoContent)

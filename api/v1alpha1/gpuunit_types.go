@@ -15,6 +15,11 @@ const (
 	PhaseProgressing = "Progressing"
 	PhaseFailed      = "Failed"
 
+	UnitSSHPhaseDisabled = "Disabled"
+	UnitSSHPhasePending  = "Pending"
+	UnitSSHPhaseReady    = "Ready"
+	UnitSSHPhaseFailed   = "Failed"
+
 	ConditionReady = "Ready"
 
 	LifecycleStock    = "stock"
@@ -24,10 +29,14 @@ const (
 	ReasonPodStartupFailed         = "PodStartupFailed"
 	ReasonPodStatusSyncFailed      = "PodStatusSyncFailed"
 	ReasonAccessConfigInvalid      = "AccessConfigInvalid"
+	ReasonSSHConfigInvalid         = "SSHConfigInvalid"
 	ReasonStockNotReady            = "StockNotReady"
 	ReasonStockReady               = "StockReady"
 	ReasonUnitProgressing          = "UnitProgressing"
 	ReasonUnitReady                = "UnitReady"
+	ReasonUnitSSHPending           = "UnitSSHPending"
+	ReasonUnitSSHReady             = "UnitSSHReady"
+	ReasonUnitSSHFailed            = "UnitSSHFailed"
 	ReasonUnitServiceSyncFailed    = "UnitServiceSyncFailed"
 	ReasonUnitDeploymentSyncFailed = "UnitDeploymentSyncFailed"
 	ReasonStorageMountInvalid      = "StorageMountInvalid"
@@ -48,12 +57,15 @@ const (
 	EnvGPUCount    = "GPU_COUNT"
 	EnvMemoryLimit = "MEMORY_LIMIT"
 
-	DefaultAccessScheme      = "http"
-	StatusMessageUnitReady   = "GPU unit runtime is ready."
-	StatusMessageUnitWait    = "Waiting for the GPU unit runtime to become ready."
-	StatusMessageUnitStorage = "Waiting for attached storage to become ready."
-	StatusMessageStockReady  = "Stock unit is ready to be consumed."
-	StatusMessageStockWait   = "Waiting for the stock unit runtime to become ready."
+	DefaultAccessScheme          = "http"
+	StatusMessageUnitReady       = "GPU unit runtime is ready."
+	StatusMessageUnitWait        = "Waiting for the GPU unit runtime to become ready."
+	StatusMessageUnitStorage     = "Waiting for attached storage to become ready."
+	StatusMessageUnitSSHReady    = "GPU unit SSH access is ready."
+	StatusMessageUnitSSHPending  = "Waiting for the GPU unit SSH access to become ready."
+	StatusMessageUnitSSHDisabled = "GPU unit SSH access is disabled."
+	StatusMessageStockReady      = "Stock unit is ready to be consumed."
+	StatusMessageStockWait       = "Waiting for the stock unit runtime to become ready."
 
 	DefaultRuntimeImage        = "busybox:1.36"
 	StockReservationImage      = DefaultRuntimeImage
@@ -62,6 +74,17 @@ const (
 	RuntimeCommandShell        = "sh"
 	RuntimeCommandShellFlag    = "-c"
 	RuntimeCommandSleep        = "sleep 3600"
+
+	DefaultUnitSSHUsername  = "runtime"
+	DefaultUnitSSHPort      = 2222
+	DefaultUnitSSHFRPPort   = 7000
+	DefaultUnitSSHProxyPort = 1337
+	DefaultUnitSSHImage     = "lscr.io/linuxserver/openssh-server:10.2_p1-r0-ls220"
+	DefaultUnitSSHFRPImage  = "docker.io/fatedier/frpc:v0.68.0"
+	UnitSSHContainerName    = "ssh-server"
+	UnitSSHFRPContainerName = "ssh-frpc"
+
+	ConditionSSHReady = "SSHReady"
 
 	GPUUnitNamePrefix        = "unit-"
 	DefaultStockNamespace    = "runtime-stock"
@@ -105,6 +128,33 @@ type GPUUnitAccess struct {
 	Scheme      string `json:"scheme,omitempty"`
 }
 
+// GPUUnitSSHSpec defines the optional user-facing SSH access contract for one runtime unit.
+type GPUUnitSSHSpec struct {
+	Enabled        bool     `json:"enabled,omitempty"`
+	Username       string   `json:"username,omitempty"`
+	AuthorizedKeys []string `json:"authorizedKeys,omitempty"`
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=65535
+	Port int32 `json:"port,omitempty"`
+	// ServerAddr is the FRP server address that the injected sidecar dials.
+	ServerAddr string `json:"serverAddr,omitempty"`
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=65535
+	ServerPort int32 `json:"serverPort,omitempty"`
+	// ConnectHost is the user-facing HTTP CONNECT proxy host used in the ready-to-run SSH command.
+	ConnectHost string `json:"connectHost,omitempty"`
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=65535
+	ConnectPort int32 `json:"connectPort,omitempty"`
+	// DomainSuffix is combined with name + namespace when ClientDomain is omitted.
+	DomainSuffix string `json:"domainSuffix,omitempty"`
+	ClientName   string `json:"clientName,omitempty"`
+	ClientDomain string `json:"clientDomain,omitempty"`
+	Token        string `json:"token,omitempty"`
+	Image        string `json:"image,omitempty"`
+	FRPImage     string `json:"frpImage,omitempty"`
+}
+
 // GPUUnitStorageMount declares one named storage attachment for the runtime container.
 type GPUUnitStorageMount struct {
 	Name      string `json:"name"`
@@ -133,8 +183,21 @@ type GPUUnitSpec struct {
 	// Access describes the primary runtime endpoint.
 	Access GPUUnitAccess `json:"access,omitempty"`
 
+	// SSH declares whether the platform should inject a shell sidecar and FRP tunnel for user access.
+	SSH GPUUnitSSHSpec `json:"ssh,omitempty"`
+
 	// StorageMounts declares the persistent storage attachments mounted into the runtime.
 	StorageMounts []GPUUnitStorageMount `json:"storageMounts,omitempty"`
+}
+
+// GPUUnitSSHStatus reports the current SSH exposure state for one active runtime unit.
+type GPUUnitSSHStatus struct {
+	Phase         string `json:"phase,omitempty"`
+	Username      string `json:"username,omitempty"`
+	TargetHost    string `json:"targetHost,omitempty"`
+	ConnectHost   string `json:"connectHost,omitempty"`
+	ConnectPort   int32  `json:"connectPort,omitempty"`
+	AccessCommand string `json:"accessCommand,omitempty"`
 }
 
 // GPUUnitStatus defines the observed state of GPUUnit.
@@ -145,6 +208,7 @@ type GPUUnitStatus struct {
 	LastSyncTime       metav1.Time        `json:"lastSyncTime,omitempty"`
 	ServiceName        string             `json:"serviceName,omitempty"`
 	AccessURL          string             `json:"accessURL,omitempty"`
+	SSH                GPUUnitSSHStatus   `json:"ssh,omitempty"`
 	Conditions         []metav1.Condition `json:"conditions,omitempty"`
 }
 

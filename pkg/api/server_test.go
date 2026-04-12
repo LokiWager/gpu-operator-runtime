@@ -169,6 +169,22 @@ func TestServer_CreateGPUUnit(t *testing.T) {
 	}
 }
 
+func TestServer_CreateGPUUnit_ValidatesRequestBeforeService(t *testing.T) {
+	h := newTestHandler(t)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/gpu-units", strings.NewReader(`{"operationID":"gpu-op-invalid","name":"demo-instance","specName":"g1.1"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "image is required") {
+		t.Fatalf("expected image validation error, got %s", w.Body.String())
+	}
+}
+
 func TestServer_GPUUnitCrud(t *testing.T) {
 	h, _, operatorClient, cancel := newOperatorBackedHandler(t)
 	defer cancel()

@@ -14,6 +14,16 @@ spec:
   access:
     primaryPort: http
     scheme: http
+  ssh:
+    enabled: true
+    username: runtime
+    serverAddr: ssh-proxy.example.com
+    serverPort: 7000
+    connectHost: ssh-proxy.example.com
+    connectPort: 1337
+    domainSuffix: ssh.example.com
+    authorizedKeys:
+      - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA== demo@example
   template:
     command:
       - python
