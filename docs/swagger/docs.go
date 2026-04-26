@@ -833,6 +833,23 @@ const docTemplate = `{
                 }
             }
         },
+        "domain.GPUProductHealth": {
+            "type": "object",
+            "properties": {
+                "allocatable": {
+                    "type": "integer"
+                },
+                "capacity": {
+                    "type": "integer"
+                },
+                "nodeCount": {
+                    "type": "integer"
+                },
+                "product": {
+                    "type": "string"
+                }
+            }
+        },
         "domain.GPUStorageRuntime": {
             "type": "object",
             "properties": {
@@ -969,6 +986,12 @@ const docTemplate = `{
                 "activeUnitCount": {
                     "type": "integer"
                 },
+                "gpuProducts": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/domain.GPUProductHealth"
+                    }
+                },
                 "kubeError": {
                     "type": "string"
                 },
@@ -978,10 +1001,19 @@ const docTemplate = `{
                 "nodeCount": {
                     "type": "integer"
                 },
+                "readyNodeCount": {
+                    "type": "integer"
+                },
                 "startedAt": {
                     "type": "string"
                 },
                 "stockUnitCount": {
+                    "type": "integer"
+                },
+                "totalGPUAllocatable": {
+                    "type": "integer"
+                },
+                "totalGPUCapacity": {
                     "type": "integer"
                 },
                 "uptimeSeconds": {

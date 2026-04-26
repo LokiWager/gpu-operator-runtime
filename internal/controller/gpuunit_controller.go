@@ -13,6 +13,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -29,7 +30,8 @@ import (
 // GPUUnitReconciler reconciles a GPUUnit object.
 type GPUUnitReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme             *runtime.Scheme
+	BlockedEgressCIDRs []string
 }
 
 const gpuUnitControllerName = "gpuunit"
@@ -44,6 +46,7 @@ var errUnitSSHSpecIncomplete = errors.New("ssh access is enabled but spec.ssh is
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile moves the observed cluster state toward GPUUnit spec.
 func (r *GPUUnitReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -113,6 +116,14 @@ func (r *GPUUnitReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, err
 	}
 
+	networkPolicyChanged, err := r.reconcileGPUUnitNetworkPolicy(ctx, &instance)
+	if err != nil {
+		if updateErr := r.markUnitFailed(ctx, &instance, serviceName, accessURL, runtimev1alpha1.ReasonUnitNetworkPolicySyncFailed, err.Error()); updateErr != nil {
+			return ctrl.Result{}, updateErr
+		}
+		return ctrl.Result{}, err
+	}
+
 	dep, deploymentChanged, err := r.reconcileGPUUnitDeployment(ctx, &instance, storageMounts)
 	if err != nil {
 		if errors.Is(err, errStatusOnly) {
@@ -147,7 +158,7 @@ func (r *GPUUnitReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, err
 	}
 
-	if serviceChanged || sshConfigChanged || deploymentChanged || !storageReady {
+	if serviceChanged || sshConfigChanged || networkPolicyChanged || deploymentChanged || !storageReady {
 		return ctrl.Result{RequeueAfter: requeueAfterUpdate}, nil
 	}
 	return ctrl.Result{}, nil
@@ -163,6 +174,7 @@ func (r *GPUUnitReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
 		Owns(&corev1.ConfigMap{}).
+		Owns(&networkingv1.NetworkPolicy{}).
 		Named(gpuUnitControllerName).
 		Complete(r)
 }

@@ -308,6 +308,12 @@ func TestReconcileGPUStorageAccessorUsesDufs(t *testing.T) {
 	if len(container.Command) != 1 || container.Command[0] != "dufs" {
 		t.Fatalf("expected dufs command, got %+v", container.Command)
 	}
+	if container.SecurityContext == nil || container.SecurityContext.AllowPrivilegeEscalation == nil || *container.SecurityContext.AllowPrivilegeEscalation {
+		t.Fatalf("expected accessor to disable privilege escalation, got %+v", container.SecurityContext)
+	}
+	if container.SecurityContext.SeccompProfile == nil || container.SecurityContext.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
+		t.Fatalf("expected accessor seccomp=RuntimeDefault, got %+v", container.SecurityContext)
+	}
 
 	var got runtimev1alpha1.GPUStorage
 	if err := cl.Get(context.Background(), types.NamespacedName{Namespace: storage.Namespace, Name: storage.Name}, &got); err != nil {

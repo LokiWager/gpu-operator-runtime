@@ -82,6 +82,17 @@ definitions:
       template:
         $ref: '#/definitions/v1alpha1.GPUUnitTemplate'
     type: object
+  domain.GPUProductHealth:
+    properties:
+      allocatable:
+        type: integer
+      capacity:
+        type: integer
+      nodeCount:
+        type: integer
+      product:
+        type: string
+    type: object
   domain.GPUStorageRuntime:
     properties:
       accessor:
@@ -172,15 +183,25 @@ definitions:
     properties:
       activeUnitCount:
         type: integer
+      gpuProducts:
+        items:
+          $ref: '#/definitions/domain.GPUProductHealth'
+        type: array
       kubeError:
         type: string
       kubernetesConnected:
         type: boolean
       nodeCount:
         type: integer
+      readyNodeCount:
+        type: integer
       startedAt:
         type: string
       stockUnitCount:
+        type: integer
+      totalGPUAllocatable:
+        type: integer
+      totalGPUCapacity:
         type: integer
       uptimeSeconds:
         type: integer

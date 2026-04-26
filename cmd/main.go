@@ -18,6 +18,7 @@ import (
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
+	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/kubernetes"
@@ -35,6 +36,7 @@ import (
 	"github.com/loki/gpu-operator-runtime/pkg/api"
 	appconfig "github.com/loki/gpu-operator-runtime/pkg/config"
 	"github.com/loki/gpu-operator-runtime/pkg/jobs"
+	runtimemetrics "github.com/loki/gpu-operator-runtime/pkg/metrics"
 	"github.com/loki/gpu-operator-runtime/pkg/service"
 )
 
@@ -45,6 +47,7 @@ var (
 
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
+	utilruntime.Must(networkingv1.AddToScheme(scheme))
 	utilruntime.Must(runtimev1alpha1.AddToScheme(scheme))
 }
 
@@ -70,6 +73,11 @@ func main() {
 	reportInterval, err := cfg.ReportIntervalDuration()
 	if err != nil {
 		setupLog.Error(err, "Invalid report interval in manager config", "config", configPath)
+		os.Exit(1)
+	}
+	blockedEgressCIDRs, err := cfg.NormalizedBlockedEgressCIDRs()
+	if err != nil {
+		setupLog.Error(err, "Invalid blocked egress CIDRs in manager config", "config", configPath)
 		os.Exit(1)
 	}
 
@@ -108,8 +116,9 @@ func main() {
 	}
 
 	if err := (&controller.GPUUnitReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:             mgr.GetClient(),
+		Scheme:             mgr.GetScheme(),
+		BlockedEgressCIDRs: blockedEgressCIDRs,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "GPUUnit")
 		os.Exit(1)
@@ -130,6 +139,10 @@ func main() {
 
 	appLogger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	svc := service.New(kubeClient, mgr.GetClient(), appLogger)
+	if err := runtimemetrics.RegisterRuntimeCollector(svc); err != nil {
+		setupLog.Error(err, "Failed to register runtime metrics collector")
+		os.Exit(1)
+	}
 
 	httpHandler := api.NewServer(svc, appLogger)
 	httpServer := &http.Server{

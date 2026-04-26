@@ -94,10 +94,14 @@ func desiredUnitPodSpecParts(
 	if err != nil {
 		return unitPodSpecParts{}, err
 	}
+	sharedMemoryVolume, err := desiredSharedMemoryVolume(instance.Spec.Memory)
+	if err != nil {
+		return unitPodSpecParts{}, fmt.Errorf(parseMemoryErrorFormat, instance.Spec.Memory, err)
+	}
 
 	parts := unitPodSpecParts{
 		Containers: []corev1.Container{runtimeContainer},
-		Volumes:    desiredStorageVolumes(storageMounts),
+		Volumes:    append(desiredStorageVolumes(storageMounts), sharedMemoryVolume),
 	}
 	if lifecycleForUnit(instance) != runtimev1alpha1.LifecycleInstance || !instance.Spec.SSH.Enabled {
 		return parts, nil
@@ -129,7 +133,8 @@ func desiredUnitRuntimeContainer(
 		Env:             defaultGPUUnitEnv(instance),
 		Ports:           desiredContainerPorts(instance.Spec.Template.Ports),
 		Resources:       resources,
-		VolumeMounts:    desiredStorageVolumeMounts(storageMounts),
+		SecurityContext: restrictedContainerSecurityContext(),
+		VolumeMounts:    desiredUnitRuntimeVolumeMounts(storageMounts),
 	}
 	if len(instance.Spec.Template.Command) > 0 {
 		container.Command = append([]string(nil), instance.Spec.Template.Command...)
@@ -148,6 +153,11 @@ func desiredUnitRuntimeContainer(
 		container.Env = append(container.Env, corev1.EnvVar{Name: env.Name, Value: env.Value})
 	}
 	return container, nil
+}
+
+func desiredUnitRuntimeVolumeMounts(storageMounts []resolvedGPUUnitStorageMount) []corev1.VolumeMount {
+	mounts := desiredStorageVolumeMounts(storageMounts)
+	return append(mounts, desiredSharedMemoryVolumeMount())
 }
 
 func desiredUnitRuntimeResources(instance runtimev1alpha1.GPUUnit) (corev1.ResourceRequirements, error) {
@@ -301,9 +311,10 @@ func desiredUnitSSHServerSidecar(
 			{Name: unitSSHAuthorizedKeysDigestEnv, Value: unitSSHAuthorizedKeysDigest(sshSpec)},
 			{Name: "USER_NAME", Value: sshSpec.Username},
 			{Name: "PASSWORD_ACCESS", Value: "false"},
-			{Name: "SUDO_ACCESS", Value: "true"},
+			{Name: "SUDO_ACCESS", Value: "false"},
 			{Name: "LOG_STDOUT", Value: "true"},
 		},
+		SecurityContext: restrictedContainerSecurityContext(),
 		Ports: []corev1.ContainerPort{{
 			Name:          "ssh",
 			ContainerPort: sshSpec.Port,
@@ -330,6 +341,7 @@ func desiredUnitSSHFRPSidecar(
 		Name:            runtimev1alpha1.UnitSSHFRPContainerName,
 		Image:           sshSpec.FRPImage,
 		ImagePullPolicy: corev1.PullIfNotPresent,
+		SecurityContext: restrictedContainerSecurityContext(),
 		Command:         []string{"sh", "-c"},
 		Args:            []string{desiredUnitSSHFRPConfig(instance, sshSpec)},
 	}

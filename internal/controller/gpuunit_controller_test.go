@@ -7,14 +7,17 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	types "k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	runtimev1alpha1 "github.com/loki/gpu-operator-runtime/api/v1alpha1"
+	appconfig "github.com/loki/gpu-operator-runtime/pkg/config"
 )
 
 func newControllerScheme(t *testing.T) *runtime.Scheme {
@@ -30,10 +33,21 @@ func newControllerScheme(t *testing.T) *runtime.Scheme {
 	if err := corev1.AddToScheme(scheme); err != nil {
 		t.Fatalf("add core scheme error: %v", err)
 	}
+	if err := networkingv1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add networking scheme error: %v", err)
+	}
 	if err := runtimev1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatalf("add runtime scheme error: %v", err)
 	}
 	return scheme
+}
+
+func newGPUUnitReconciler(cl ctrlclient.Client, scheme *runtime.Scheme) *GPUUnitReconciler {
+	return &GPUUnitReconciler{
+		Client:             cl,
+		Scheme:             scheme,
+		BlockedEgressCIDRs: append([]string(nil), appconfig.DefaultManagerConfig().BlockedEgressCIDRs...),
+	}
 }
 
 func TestReconcileStockGPUUnitCreatesDeploymentWithoutService(t *testing.T) {
@@ -70,7 +84,7 @@ func TestReconcileStockGPUUnitCreatesDeploymentWithoutService(t *testing.T) {
 		WithObjects(instance).
 		Build()
 
-	reconciler := &GPUUnitReconciler{Client: cl, Scheme: scheme}
+	reconciler := newGPUUnitReconciler(cl, scheme)
 	_, err := reconciler.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: types.NamespacedName{Namespace: instance.Namespace, Name: instance.Name},
 	})
@@ -151,7 +165,7 @@ func TestReconcileInstanceGPUUnitCreatesDeploymentAndService(t *testing.T) {
 		WithObjects(instance).
 		Build()
 
-	reconciler := &GPUUnitReconciler{Client: cl, Scheme: scheme}
+	reconciler := newGPUUnitReconciler(cl, scheme)
 	_, err := reconciler.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: types.NamespacedName{Namespace: instance.Namespace, Name: instance.Name},
 	})
@@ -166,6 +180,38 @@ func TestReconcileInstanceGPUUnitCreatesDeploymentAndService(t *testing.T) {
 	if dep.Spec.Replicas == nil || *dep.Spec.Replicas != 1 {
 		t.Fatalf("expected deployment replicas=1, got %+v", dep.Spec.Replicas)
 	}
+	runtimeContainer := dep.Spec.Template.Spec.Containers[0]
+	if runtimeContainer.SecurityContext == nil || runtimeContainer.SecurityContext.AllowPrivilegeEscalation == nil || *runtimeContainer.SecurityContext.AllowPrivilegeEscalation {
+		t.Fatalf("expected runtime container to disable privilege escalation, got %+v", runtimeContainer.SecurityContext)
+	}
+	if runtimeContainer.SecurityContext.SeccompProfile == nil || runtimeContainer.SecurityContext.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
+		t.Fatalf("expected runtime container seccomp=RuntimeDefault, got %+v", runtimeContainer.SecurityContext)
+	}
+	foundShmMount := false
+	for _, mount := range runtimeContainer.VolumeMounts {
+		if mount.Name == unitSharedMemoryVolumeName && mount.MountPath == unitSharedMemoryMountPath {
+			foundShmMount = true
+		}
+	}
+	if !foundShmMount {
+		t.Fatalf("expected runtime container to mount %s, got %+v", unitSharedMemoryMountPath, runtimeContainer.VolumeMounts)
+	}
+	foundShmVolume := false
+	for _, volume := range dep.Spec.Template.Spec.Volumes {
+		if volume.Name != unitSharedMemoryVolumeName || volume.EmptyDir == nil {
+			continue
+		}
+		foundShmVolume = true
+		if volume.EmptyDir.Medium != corev1.StorageMediumMemory {
+			t.Fatalf("expected shm volume to use memory medium, got %+v", volume.EmptyDir)
+		}
+		if volume.EmptyDir.SizeLimit == nil || volume.EmptyDir.SizeLimit.String() != "8Gi" {
+			t.Fatalf("expected shm volume size limit 8Gi, got %+v", volume.EmptyDir.SizeLimit)
+		}
+	}
+	if !foundShmVolume {
+		t.Fatalf("expected shm volume, got %+v", dep.Spec.Template.Spec.Volumes)
+	}
 
 	var svc corev1.Service
 	if err := cl.Get(context.Background(), types.NamespacedName{Namespace: instance.Namespace, Name: serviceNameForUnit(instance.Name)}, &svc); err != nil {
@@ -173,6 +219,38 @@ func TestReconcileInstanceGPUUnitCreatesDeploymentAndService(t *testing.T) {
 	}
 	if len(svc.Spec.Ports) != 1 || svc.Spec.Ports[0].Port != 8080 {
 		t.Fatalf("expected service port 8080, got %+v", svc.Spec.Ports)
+	}
+
+	var networkPolicy networkingv1.NetworkPolicy
+	if err := cl.Get(context.Background(), types.NamespacedName{Namespace: instance.Namespace, Name: networkPolicyNameForUnit(instance.Name)}, &networkPolicy); err != nil {
+		t.Fatalf("network policy should be created: %v", err)
+	}
+	if len(networkPolicy.Spec.Egress) < 2 {
+		t.Fatalf("expected dns and public egress rules, got %+v", networkPolicy.Spec.Egress)
+	}
+	foundBlockedRanges := map[string]bool{
+		"10.0.0.0/8":     false,
+		"100.64.0.0/10":  false,
+		"169.254.0.0/16": false,
+		"172.16.0.0/12":  false,
+		"192.168.0.0/16": false,
+	}
+	for _, rule := range networkPolicy.Spec.Egress {
+		for _, peer := range rule.To {
+			if peer.IPBlock == nil || peer.IPBlock.CIDR != "0.0.0.0/0" {
+				continue
+			}
+			for _, blockedCIDR := range peer.IPBlock.Except {
+				if _, ok := foundBlockedRanges[blockedCIDR]; ok {
+					foundBlockedRanges[blockedCIDR] = true
+				}
+			}
+		}
+	}
+	for blockedCIDR, found := range foundBlockedRanges {
+		if !found {
+			t.Fatalf("expected blocked cidr %s in egress policy, got %+v", blockedCIDR, networkPolicy.Spec.Egress)
+		}
 	}
 
 	var got runtimev1alpha1.GPUUnit
@@ -250,7 +328,7 @@ func TestReconcileInstanceGPUUnitMountsReadyStorage(t *testing.T) {
 		WithObjects(instance, storage).
 		Build()
 
-	reconciler := &GPUUnitReconciler{Client: cl, Scheme: scheme}
+	reconciler := newGPUUnitReconciler(cl, scheme)
 	_, err := reconciler.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: types.NamespacedName{Namespace: instance.Namespace, Name: instance.Name},
 	})
@@ -262,13 +340,22 @@ func TestReconcileInstanceGPUUnitMountsReadyStorage(t *testing.T) {
 	if err := cl.Get(context.Background(), types.NamespacedName{Namespace: instance.Namespace, Name: deploymentNameForUnit(instance.Name)}, &dep); err != nil {
 		t.Fatalf("deployment should be created: %v", err)
 	}
-	if len(dep.Spec.Template.Spec.Volumes) != 1 {
-		t.Fatalf("expected one pvc-backed volume, got %+v", dep.Spec.Template.Spec.Volumes)
+	foundPVCVolume := false
+	for _, volume := range dep.Spec.Template.Spec.Volumes {
+		if volume.PersistentVolumeClaim != nil && volume.PersistentVolumeClaim.ClaimName == "model-cache" {
+			foundPVCVolume = true
+		}
 	}
-	if dep.Spec.Template.Spec.Volumes[0].PersistentVolumeClaim == nil || dep.Spec.Template.Spec.Volumes[0].PersistentVolumeClaim.ClaimName != "model-cache" {
-		t.Fatalf("expected pvc claim model-cache, got %+v", dep.Spec.Template.Spec.Volumes[0].PersistentVolumeClaim)
+	if !foundPVCVolume {
+		t.Fatalf("expected pvc claim model-cache, got %+v", dep.Spec.Template.Spec.Volumes)
 	}
-	if len(dep.Spec.Template.Spec.Containers[0].VolumeMounts) != 1 || dep.Spec.Template.Spec.Containers[0].VolumeMounts[0].MountPath != "/data" {
+	foundDataMount := false
+	for _, mount := range dep.Spec.Template.Spec.Containers[0].VolumeMounts {
+		if mount.MountPath == "/data" {
+			foundDataMount = true
+		}
+	}
+	if !foundDataMount {
 		t.Fatalf("expected volume mount /data, got %+v", dep.Spec.Template.Spec.Containers[0].VolumeMounts)
 	}
 }
@@ -320,10 +407,7 @@ func TestReconcileInstanceGPUUnitAddsSSHSidecarsAndStatus(t *testing.T) {
 		WithObjects(instance).
 		Build()
 
-	reconciler := &GPUUnitReconciler{
-		Client: cl,
-		Scheme: scheme,
-	}
+	reconciler := newGPUUnitReconciler(cl, scheme)
 	_, err := reconciler.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: types.NamespacedName{Namespace: instance.Namespace, Name: instance.Name},
 	})
@@ -465,7 +549,7 @@ func TestReconcileInstanceGPUUnitPendingStorageMarksStatusWaiting(t *testing.T) 
 		WithObjects(instance, storage).
 		Build()
 
-	reconciler := &GPUUnitReconciler{Client: cl, Scheme: scheme}
+	reconciler := newGPUUnitReconciler(cl, scheme)
 	_, err := reconciler.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: types.NamespacedName{Namespace: instance.Namespace, Name: instance.Name},
 	})
@@ -517,7 +601,7 @@ func TestReconcileGPUUnitInvalidAccessMarksStatusFailed(t *testing.T) {
 		WithObjects(instance).
 		Build()
 
-	reconciler := &GPUUnitReconciler{Client: cl, Scheme: scheme}
+	reconciler := newGPUUnitReconciler(cl, scheme)
 	_, err := reconciler.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: types.NamespacedName{Namespace: instance.Namespace, Name: instance.Name},
 	})
@@ -590,7 +674,7 @@ func TestReconcileStockGPUUnitPodFailureMarksStatusFailed(t *testing.T) {
 		WithObjects(instance, pod).
 		Build()
 
-	reconciler := &GPUUnitReconciler{Client: cl, Scheme: scheme}
+	reconciler := newGPUUnitReconciler(cl, scheme)
 	_, err := reconciler.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: types.NamespacedName{Namespace: instance.Namespace, Name: instance.Name},
 	})
@@ -683,7 +767,7 @@ func TestReconcileInstanceGPUUnitInitSidecarFailureMarksStatusFailed(t *testing.
 		WithObjects(instance, pod).
 		Build()
 
-	reconciler := &GPUUnitReconciler{Client: cl, Scheme: scheme}
+	reconciler := newGPUUnitReconciler(cl, scheme)
 	_, err := reconciler.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: types.NamespacedName{Namespace: instance.Namespace, Name: instance.Name},
 	})

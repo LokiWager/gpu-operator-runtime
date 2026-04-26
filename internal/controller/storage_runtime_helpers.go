@@ -241,6 +241,7 @@ func desiredGPUStoragePrepareJob(
 	container := corev1.Container{
 		Name:            "storage-prepare",
 		ImagePullPolicy: corev1.PullIfNotPresent,
+		SecurityContext: restrictedContainerSecurityContext(),
 		VolumeMounts: []corev1.VolumeMount{{
 			Name:      "workspace",
 			MountPath: runtimev1alpha1.StoragePrepareMountPath,
@@ -338,6 +339,7 @@ func desiredGPUStorageAccessorDeployment(storage runtimev1alpha1.GPUStorage, cla
 						Name:            runtimev1alpha1.StorageAccessorContainerName,
 						Image:           runtimev1alpha1.DefaultStorageAccessorImage,
 						ImagePullPolicy: corev1.PullIfNotPresent,
+						SecurityContext: restrictedContainerSecurityContext(),
 						Command:         []string{"dufs"},
 						Args: []string{
 							"/data",

@@ -177,36 +177,31 @@ func (s *Service) Health(ctx context.Context) (domain.HealthStatus, error) {
 		UptimeSeconds:       int64(time.Since(s.startedAt).Seconds()),
 		KubernetesConnected: false,
 		NodeCount:           0,
+		ReadyNodeCount:      0,
 		StockUnitCount:      0,
 		ActiveUnitCount:     0,
-	}
-
-	if s.kube == nil {
-		return health, nil
+		TotalGPUCapacity:    0,
+		TotalGPUAllocatable: 0,
 	}
 
 	kubeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 
-	nodes, err := s.kube.CoreV1().Nodes().List(kubeCtx, metav1.ListOptions{})
+	nodeInventory, err := s.collectNodeInventory(kubeCtx)
 	if err != nil {
 		health.KubeError = err.Error()
-		return health, nil
 	}
-	health.KubernetesConnected = true
-	health.NodeCount = len(nodes.Items)
+	health.KubernetesConnected = nodeInventory.Connected
+	health.NodeCount = nodeInventory.NodeCount
+	health.ReadyNodeCount = nodeInventory.ReadyNodeCount
+	health.TotalGPUCapacity = nodeInventory.TotalGPUCapacity
+	health.TotalGPUAllocatable = nodeInventory.TotalGPUAllocatable
+	health.GPUProducts = append([]domain.GPUProductHealth(nil), nodeInventory.GPUProducts...)
 
-	if s.operator != nil {
-		var units runtimev1alpha1.GPUUnitList
-		if err := s.operator.List(kubeCtx, &units); err == nil {
-			for i := range units.Items {
-				if isStockGPUUnit(&units.Items[i]) {
-					health.StockUnitCount++
-				} else {
-					health.ActiveUnitCount++
-				}
-			}
-		}
+	_, stockUnits, activeUnits, err := s.collectRuntimeUnitPhaseCounts(kubeCtx)
+	if err == nil {
+		health.StockUnitCount = stockUnits
+		health.ActiveUnitCount = activeUnits
 	}
 	return health, nil
 }

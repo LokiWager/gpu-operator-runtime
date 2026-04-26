@@ -8,13 +8,25 @@ import (
 
 // HealthStatus summarizes process and cluster health for the HTTP health endpoint.
 type HealthStatus struct {
-	StartedAt           time.Time `json:"startedAt"`
-	UptimeSeconds       int64     `json:"uptimeSeconds"`
-	KubernetesConnected bool      `json:"kubernetesConnected"`
-	NodeCount           int       `json:"nodeCount"`
-	KubeError           string    `json:"kubeError,omitempty"`
-	StockUnitCount      int       `json:"stockUnitCount"`
-	ActiveUnitCount     int       `json:"activeUnitCount"`
+	StartedAt           time.Time          `json:"startedAt"`
+	UptimeSeconds       int64              `json:"uptimeSeconds"`
+	KubernetesConnected bool               `json:"kubernetesConnected"`
+	NodeCount           int                `json:"nodeCount"`
+	ReadyNodeCount      int                `json:"readyNodeCount"`
+	KubeError           string             `json:"kubeError,omitempty"`
+	StockUnitCount      int                `json:"stockUnitCount"`
+	ActiveUnitCount     int                `json:"activeUnitCount"`
+	TotalGPUCapacity    int64              `json:"totalGPUCapacity"`
+	TotalGPUAllocatable int64              `json:"totalGPUAllocatable"`
+	GPUProducts         []GPUProductHealth `json:"gpuProducts,omitempty"`
+}
+
+// GPUProductHealth summarizes GPU inventory grouped by Nvidia product label.
+type GPUProductHealth struct {
+	Product     string `json:"product"`
+	NodeCount   int    `json:"nodeCount"`
+	Capacity    int64  `json:"capacity"`
+	Allocatable int64  `json:"allocatable"`
 }
 
 // OperatorJobStatus is the state of an asynchronous operator-side workflow.

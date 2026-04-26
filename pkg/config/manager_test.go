@@ -23,6 +23,14 @@ func TestLoadManagerConfigMergesDefaults(t *testing.T) {
 	if cfg.MetricsBindAddress != "0" {
 		t.Fatalf("expected default metrics bind address, got %s", cfg.MetricsBindAddress)
 	}
+	if len(cfg.BlockedEgressCIDRs) != len(defaultBlockedEgressCIDRs) {
+		t.Fatalf("expected default blocked cidrs, got %+v", cfg.BlockedEgressCIDRs)
+	}
+	for i := range defaultBlockedEgressCIDRs {
+		if cfg.BlockedEgressCIDRs[i] != defaultBlockedEgressCIDRs[i] {
+			t.Fatalf("expected blocked cidr %q at index %d, got %+v", defaultBlockedEgressCIDRs[i], i, cfg.BlockedEgressCIDRs)
+		}
+	}
 
 	interval, err := cfg.ReportIntervalDuration()
 	if err != nil {
@@ -30,5 +38,18 @@ func TestLoadManagerConfigMergesDefaults(t *testing.T) {
 	}
 	if interval.String() != "45s" {
 		t.Fatalf("expected 45s interval, got %s", interval)
+	}
+
+	blockedCIDRs, err := cfg.NormalizedBlockedEgressCIDRs()
+	if err != nil {
+		t.Fatalf("normalize blocked cidrs: %v", err)
+	}
+	if len(blockedCIDRs) != len(defaultBlockedEgressCIDRs) {
+		t.Fatalf("expected normalized blocked cidrs, got %+v", blockedCIDRs)
+	}
+	for i := range defaultBlockedEgressCIDRs {
+		if blockedCIDRs[i] != defaultBlockedEgressCIDRs[i] {
+			t.Fatalf("expected normalized blocked cidr %q at index %d, got %+v", defaultBlockedEgressCIDRs[i], i, blockedCIDRs)
+		}
 	}
 }
