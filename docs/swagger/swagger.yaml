@@ -183,6 +183,12 @@ definitions:
     properties:
       activeUnitCount:
         type: integer
+      averageGpuUtilizationPercent:
+        type: number
+      freeGpuMemoryMiB:
+        type: number
+      gpuDeviceCount:
+        type: integer
       gpuProducts:
         items:
           $ref: '#/definitions/domain.GPUProductHealth'
@@ -193,6 +199,10 @@ definitions:
         type: boolean
       nodeCount:
         type: integer
+      nvidiaMetricsConnected:
+        type: boolean
+      nvidiaMetricsError:
+        type: string
       readyNodeCount:
         type: integer
       startedAt:
@@ -203,8 +213,12 @@ definitions:
         type: integer
       totalGPUCapacity:
         type: integer
+      totalGpuMemoryMiB:
+        type: number
       uptimeSeconds:
         type: integer
+      usedGpuMemoryMiB:
+        type: number
     type: object
   domain.OperatorJob:
     properties:

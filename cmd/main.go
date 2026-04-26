@@ -139,6 +139,7 @@ func main() {
 
 	appLogger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	svc := service.New(kubeClient, mgr.GetClient(), appLogger)
+	svc.ConfigureNvidiaMetrics(cfg.NvidiaMetricsEndpoint, nil)
 	if err := runtimemetrics.RegisterRuntimeCollector(svc); err != nil {
 		setupLog.Error(err, "Failed to register runtime metrics collector")
 		os.Exit(1)

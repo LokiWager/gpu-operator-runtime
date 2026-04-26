@@ -17,17 +17,25 @@ const unknownMetricsPhase = "Unknown"
 
 // RuntimeMetricsSnapshot is the scrape-time view exported to Prometheus collectors.
 type RuntimeMetricsSnapshot struct {
-	KubernetesConnected bool
-	NodeCount           int
-	ReadyNodeCount      int
-	TotalGPUCapacity    int64
-	TotalGPUAllocatable int64
-	GPUProducts         []domain.GPUProductHealth
-	Nodes               []RuntimeNodeMetrics
-	UnitCounts          map[RuntimeUnitPhaseKey]int
-	StoragePhases       map[string]int
-	StoragePrepare      map[string]int
-	StorageAccessor     map[string]int
+	KubernetesConnected          bool
+	NodeCount                    int
+	ReadyNodeCount               int
+	TotalGPUCapacity             int64
+	TotalGPUAllocatable          int64
+	GPUProducts                  []domain.GPUProductHealth
+	Nodes                        []RuntimeNodeMetrics
+	NvidiaMetricsConnected       bool
+	NvidiaMetricsError           string
+	GPUDeviceCount               int
+	TotalGPUMemoryMiB            float64
+	UsedGPUMemoryMiB             float64
+	FreeGPUMemoryMiB             float64
+	AverageGPUUtilizationPercent float64
+	GPUDevices                   []RuntimeGPUDeviceMetrics
+	UnitCounts                   map[RuntimeUnitPhaseKey]int
+	StoragePhases                map[string]int
+	StoragePrepare               map[string]int
+	StorageAccessor              map[string]int
 }
 
 // RuntimeUnitPhaseKey groups unit counts by lifecycle and phase.
@@ -78,6 +86,19 @@ func (s *Service) RuntimeMetricsSnapshot(ctx context.Context) (RuntimeMetricsSna
 	snapshot.TotalGPUAllocatable = nodeInventory.TotalGPUAllocatable
 	snapshot.GPUProducts = append([]domain.GPUProductHealth(nil), nodeInventory.GPUProducts...)
 	snapshot.Nodes = append([]RuntimeNodeMetrics(nil), nodeInventory.Nodes...)
+
+	nvidiaTelemetry, err := s.collectNvidiaTelemetry(ctx)
+	if err != nil {
+		resultErr = errors.Join(resultErr, err)
+	}
+	snapshot.NvidiaMetricsConnected = nvidiaTelemetry.Connected
+	snapshot.NvidiaMetricsError = nvidiaTelemetry.Error
+	snapshot.GPUDeviceCount = nvidiaTelemetry.DeviceCount
+	snapshot.TotalGPUMemoryMiB = nvidiaTelemetry.TotalMemoryMiB
+	snapshot.UsedGPUMemoryMiB = nvidiaTelemetry.UsedMemoryMiB
+	snapshot.FreeGPUMemoryMiB = nvidiaTelemetry.FreeMemoryMiB
+	snapshot.AverageGPUUtilizationPercent = nvidiaTelemetry.AverageGPUUtilizationPercent
+	snapshot.GPUDevices = append([]RuntimeGPUDeviceMetrics(nil), nvidiaTelemetry.Devices...)
 
 	unitCounts, _, _, err := s.collectRuntimeUnitPhaseCounts(ctx)
 	if err != nil {

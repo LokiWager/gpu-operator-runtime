@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"reflect"
 	"sort"
 	"strconv"
@@ -45,10 +46,12 @@ type createStockUnitsJob struct {
 
 // Service owns the control-plane business logic behind the HTTP API.
 type Service struct {
-	kube      kubernetes.Interface
-	operator  ctrlclient.Client
-	logger    *slog.Logger
-	startedAt time.Time
+	kube                  kubernetes.Interface
+	operator              ctrlclient.Client
+	logger                *slog.Logger
+	startedAt             time.Time
+	httpClient            *http.Client
+	nvidiaMetricsEndpoint string
 
 	unitMu        sync.Mutex
 	jobMu         sync.RWMutex
@@ -64,9 +67,18 @@ func New(kubeClient kubernetes.Interface, operatorClient ctrlclient.Client, logg
 		operator:      operatorClient,
 		logger:        logger,
 		startedAt:     time.Now().UTC(),
+		httpClient:    &http.Client{Timeout: 5 * time.Second},
 		jobs:          map[string]domain.OperatorJob{},
 		requestHashes: map[string]string{},
 		jobQueue:      make(chan createStockUnitsJob, 128),
+	}
+}
+
+// ConfigureNvidiaMetrics wires an optional DCGM exporter endpoint into runtime health and metrics collection.
+func (s *Service) ConfigureNvidiaMetrics(endpoint string, httpClient *http.Client) {
+	s.nvidiaMetricsEndpoint = strings.TrimSpace(endpoint)
+	if httpClient != nil {
+		s.httpClient = httpClient
 	}
 }
 
@@ -173,15 +185,16 @@ func (s *Service) GetOperatorJob(ctx context.Context, operationID string) (domai
 // Health reports process uptime, cluster reachability, and unit counts.
 func (s *Service) Health(ctx context.Context) (domain.HealthStatus, error) {
 	health := domain.HealthStatus{
-		StartedAt:           s.startedAt,
-		UptimeSeconds:       int64(time.Since(s.startedAt).Seconds()),
-		KubernetesConnected: false,
-		NodeCount:           0,
-		ReadyNodeCount:      0,
-		StockUnitCount:      0,
-		ActiveUnitCount:     0,
-		TotalGPUCapacity:    0,
-		TotalGPUAllocatable: 0,
+		StartedAt:              s.startedAt,
+		UptimeSeconds:          int64(time.Since(s.startedAt).Seconds()),
+		KubernetesConnected:    false,
+		NodeCount:              0,
+		ReadyNodeCount:         0,
+		StockUnitCount:         0,
+		ActiveUnitCount:        0,
+		TotalGPUCapacity:       0,
+		TotalGPUAllocatable:    0,
+		NvidiaMetricsConnected: false,
 	}
 
 	kubeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
@@ -197,6 +210,20 @@ func (s *Service) Health(ctx context.Context) (domain.HealthStatus, error) {
 	health.TotalGPUCapacity = nodeInventory.TotalGPUCapacity
 	health.TotalGPUAllocatable = nodeInventory.TotalGPUAllocatable
 	health.GPUProducts = append([]domain.GPUProductHealth(nil), nodeInventory.GPUProducts...)
+
+	nvidiaTelemetry, err := s.collectNvidiaTelemetry(kubeCtx)
+	if err != nil {
+		health.NvidiaMetricsError = err.Error()
+	}
+	health.NvidiaMetricsConnected = nvidiaTelemetry.Connected
+	health.GPUDeviceCount = nvidiaTelemetry.DeviceCount
+	health.TotalGPUMemoryMiB = nvidiaTelemetry.TotalMemoryMiB
+	health.UsedGPUMemoryMiB = nvidiaTelemetry.UsedMemoryMiB
+	health.FreeGPUMemoryMiB = nvidiaTelemetry.FreeMemoryMiB
+	health.AverageGPUUtilizationPercent = nvidiaTelemetry.AverageGPUUtilizationPercent
+	if health.NvidiaMetricsError == "" {
+		health.NvidiaMetricsError = nvidiaTelemetry.Error
+	}
 
 	_, stockUnits, activeUnits, err := s.collectRuntimeUnitPhaseCounts(kubeCtx)
 	if err == nil {

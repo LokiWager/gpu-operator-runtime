@@ -8,17 +8,24 @@ import (
 
 // HealthStatus summarizes process and cluster health for the HTTP health endpoint.
 type HealthStatus struct {
-	StartedAt           time.Time          `json:"startedAt"`
-	UptimeSeconds       int64              `json:"uptimeSeconds"`
-	KubernetesConnected bool               `json:"kubernetesConnected"`
-	NodeCount           int                `json:"nodeCount"`
-	ReadyNodeCount      int                `json:"readyNodeCount"`
-	KubeError           string             `json:"kubeError,omitempty"`
-	StockUnitCount      int                `json:"stockUnitCount"`
-	ActiveUnitCount     int                `json:"activeUnitCount"`
-	TotalGPUCapacity    int64              `json:"totalGPUCapacity"`
-	TotalGPUAllocatable int64              `json:"totalGPUAllocatable"`
-	GPUProducts         []GPUProductHealth `json:"gpuProducts,omitempty"`
+	StartedAt                    time.Time          `json:"startedAt"`
+	UptimeSeconds                int64              `json:"uptimeSeconds"`
+	KubernetesConnected          bool               `json:"kubernetesConnected"`
+	NodeCount                    int                `json:"nodeCount"`
+	ReadyNodeCount               int                `json:"readyNodeCount"`
+	KubeError                    string             `json:"kubeError,omitempty"`
+	StockUnitCount               int                `json:"stockUnitCount"`
+	ActiveUnitCount              int                `json:"activeUnitCount"`
+	TotalGPUCapacity             int64              `json:"totalGPUCapacity"`
+	TotalGPUAllocatable          int64              `json:"totalGPUAllocatable"`
+	GPUProducts                  []GPUProductHealth `json:"gpuProducts,omitempty"`
+	NvidiaMetricsConnected       bool               `json:"nvidiaMetricsConnected"`
+	NvidiaMetricsError           string             `json:"nvidiaMetricsError,omitempty"`
+	GPUDeviceCount               int                `json:"gpuDeviceCount"`
+	TotalGPUMemoryMiB            float64            `json:"totalGpuMemoryMiB"`
+	UsedGPUMemoryMiB             float64            `json:"usedGpuMemoryMiB"`
+	FreeGPUMemoryMiB             float64            `json:"freeGpuMemoryMiB"`
+	AverageGPUUtilizationPercent float64            `json:"averageGpuUtilizationPercent"`
 }
 
 // GPUProductHealth summarizes GPU inventory grouped by Nvidia product label.

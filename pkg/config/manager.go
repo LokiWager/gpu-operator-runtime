@@ -29,6 +29,7 @@ type ManagerConfig struct {
 	MetricsSecure          bool     `yaml:"metricsSecure"`
 	EnableHTTP2            bool     `yaml:"enableHTTP2"`
 	BlockedEgressCIDRs     []string `yaml:"blockedEgressCIDRs"`
+	NvidiaMetricsEndpoint  string   `yaml:"nvidiaMetricsEndpoint"`
 }
 
 // DefaultManagerConfig returns the baseline local development settings.

@@ -986,6 +986,15 @@ const docTemplate = `{
                 "activeUnitCount": {
                     "type": "integer"
                 },
+                "averageGpuUtilizationPercent": {
+                    "type": "number"
+                },
+                "freeGpuMemoryMiB": {
+                    "type": "number"
+                },
+                "gpuDeviceCount": {
+                    "type": "integer"
+                },
                 "gpuProducts": {
                     "type": "array",
                     "items": {
@@ -1000,6 +1009,12 @@ const docTemplate = `{
                 },
                 "nodeCount": {
                     "type": "integer"
+                },
+                "nvidiaMetricsConnected": {
+                    "type": "boolean"
+                },
+                "nvidiaMetricsError": {
+                    "type": "string"
                 },
                 "readyNodeCount": {
                     "type": "integer"
@@ -1016,8 +1031,14 @@ const docTemplate = `{
                 "totalGPUCapacity": {
                     "type": "integer"
                 },
+                "totalGpuMemoryMiB": {
+                    "type": "number"
+                },
                 "uptimeSeconds": {
                     "type": "integer"
+                },
+                "usedGpuMemoryMiB": {
+                    "type": "number"
                 }
             }
         },
