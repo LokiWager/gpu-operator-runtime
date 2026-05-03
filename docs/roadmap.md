@@ -11,6 +11,9 @@
 9. Storage architecture II (accessors, data jobs, and recovery)
 10. Shared proxy access and SSH entrypoints
 11. Metrics, events, and alerting
-12. Sidecar communication channels (NATS/Kafka/SSH)
-13. Reliability and performance engineering
-14. Multi-cluster and serverless extension
+12. Image acceleration tool for cold-start optimization
+13. Serverless contract and queue-first invocation with NATS
+14. Dedicated activator service and worker registration
+15. Worker lifecycle management (prewarm, idle scale-down, and async results)
+16. Reliability and performance engineering
+17. Multi-cluster scheduling and serverless federation

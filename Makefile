@@ -1,5 +1,6 @@
 APP_NAME := manager
 PROXY_APP_NAME := runtime-proxy
+IMAGE_ACCELERATOR_APP_NAME := image-accelerator
 export GOTOOLCHAIN := go1.26.0
 
 GOFILES := $(shell find . -type f -name '*.go' -not -path './vendor/*')
@@ -18,6 +19,7 @@ build:
 	mkdir -p bin
 	go build -o bin/$(APP_NAME) ./cmd/main.go
 	go build -o bin/$(PROXY_APP_NAME) ./cmd/runtime-proxy
+	go build -o bin/$(IMAGE_ACCELERATOR_APP_NAME) ./cmd/image-accelerator
 
 test:
 	go test ./...

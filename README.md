@@ -95,6 +95,42 @@ Useful flags:
 - zap logging flags such as `--zap-devel`
 - `cmd/runtime-proxy` still accepts `--http-addr` and `--kubeconfig`
 
+Build the standalone userspace image acceleration tool:
+
+```bash
+GOTOOLCHAIN=go1.26.0 go build -o bin/image-accelerator ./cmd/image-accelerator
+```
+
+The new `image-accelerator` command is a thin wrapper around the official
+`containerd/accelerated-container-image` standalone userspace convertor. It keeps
+the official conversion engine and only adds local YAML config, flag overrides,
+and friendlier validation.
+
+It is intentionally an offline tool for CI, release, or control-plane workflows.
+The runtime manager does not call it on the request path.
+
+Important: this command follows the official overlaybd toolchain layout. It does
+not need a full overlaybd snapshotter or containerd installation, but it does
+expect these files to already exist:
+
+- `/opt/overlaybd/bin/overlaybd-create`
+- `/opt/overlaybd/bin/overlaybd-commit`
+- `/opt/overlaybd/bin/overlaybd-apply`
+- `/opt/overlaybd/bin/turboOCI-apply` when `engine: turbo-oci`
+- `/opt/overlaybd/baselayers/ext4_64` when `overlaybd.mkfs: false`
+
+Example config:
+
+```bash
+cat config/local/image-accelerator.yaml
+```
+
+Example run:
+
+```bash
+GOTOOLCHAIN=go1.26.0 go run ./cmd/image-accelerator --config config/local/image-accelerator.yaml
+```
+
 Swagger UI is served at:
 
 ```text

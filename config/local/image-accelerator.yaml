@@ -1,0 +1,30 @@
+source: "docker.io/library/redis:7"
+target: "docker.io/example/redis:7-obd"
+engine: "overlaybd"
+workDir: "/tmp/image-accelerator"
+oci: false
+referrer: false
+verbose: false
+concurrencyLimit: 4
+
+registry:
+  username: ""
+  password: ""
+  plainHTTP: false
+
+tls:
+  certDirs: []
+  rootCAs: []
+  clientCerts: []
+  insecure: false
+
+overlaybd:
+  fsType: "ext4"
+  mkfs: true
+  vsizeGB: 64
+  disableSparse: false
+
+debug:
+  reserve: false
+  noUpload: false
+  dumpManifest: false
