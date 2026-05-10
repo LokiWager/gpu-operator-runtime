@@ -168,6 +168,9 @@ func (s *Service) UpdateGPUUnit(ctx context.Context, namespace, name string, req
 	if req.SSH != nil {
 		next.SSH = *req.SSH
 	}
+	if req.Serverless != nil {
+		next.Serverless = *req.Serverless
+	}
 	if req.StorageMounts != nil {
 		if err := s.ensureGPUStoragesExist(ctx, instance.Namespace, *req.StorageMounts); err != nil {
 			return domain.GPUUnitRuntime{}, err

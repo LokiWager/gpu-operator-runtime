@@ -31,6 +31,7 @@ func gpuUnitRuntimeFromObject(instance *runtimev1alpha1.GPUUnit) domain.GPUUnitR
 		Template:             instance.Spec.Template,
 		Access:               instance.Spec.Access,
 		SSH:                  instance.Spec.SSH,
+		Serverless:           instance.Spec.Serverless,
 		StorageMounts:        append([]runtimev1alpha1.GPUUnitStorageMount(nil), instance.Spec.StorageMounts...),
 		Phase:                instance.Status.Phase,
 		ReadyReplicas:        instance.Status.ReadyReplicas,

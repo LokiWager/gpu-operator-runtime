@@ -138,6 +138,7 @@ func buildActiveUnitFromStock(stock runtimev1alpha1.GPUUnit, req CreateGPUUnitRe
 			Template:      req.Template,
 			Access:        req.Access,
 			SSH:           req.SSH,
+			Serverless:    req.Serverless,
 			StorageMounts: append([]runtimev1alpha1.GPUUnitStorageMount(nil), req.StorageMounts...),
 		},
 	}

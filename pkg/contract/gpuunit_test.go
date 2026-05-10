@@ -57,6 +57,9 @@ func TestNormalizeCreateGPUUnitRequest_AppliesDefaults(t *testing.T) {
 	if len(req.SSH.AuthorizedKeys) != 1 {
 		t.Fatalf("expected deduplicated keys, got %+v", req.SSH.AuthorizedKeys)
 	}
+	if req.Serverless.Enabled {
+		t.Fatalf("expected serverless to remain disabled when omitted")
+	}
 }
 
 func TestNormalizeCreateGPUUnitRequest_RejectsMissingImage(t *testing.T) {
@@ -67,5 +70,29 @@ func TestNormalizeCreateGPUUnitRequest_RejectsMissingImage(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatalf("expected validation error")
+	}
+}
+
+func TestNormalizeCreateGPUUnitRequest_NormalizesServerless(t *testing.T) {
+	req, err := NormalizeCreateGPUUnitRequest(CreateGPUUnitRequest{
+		OperationID: "gpu-op-3",
+		Name:        "demo-instance",
+		SpecName:    "g1.1",
+		Image:       "python:3.12",
+		Serverless: runtimev1alpha1.GPUUnitServerlessSpec{
+			RequestID: "SD-WEBUI",
+		},
+	})
+	if err != nil {
+		t.Fatalf("normalize create gpu unit request: %v", err)
+	}
+	if !req.Serverless.Enabled {
+		t.Fatalf("expected serverless to be enabled when requestID is provided")
+	}
+	if req.Serverless.RequestID != "sd-webui" {
+		t.Fatalf("expected normalized request id sd-webui, got %s", req.Serverless.RequestID)
+	}
+	if req.Serverless.IdleTimeoutSeconds != 300 {
+		t.Fatalf("expected default idle timeout 300, got %d", req.Serverless.IdleTimeoutSeconds)
 	}
 }

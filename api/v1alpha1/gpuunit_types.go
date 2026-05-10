@@ -157,6 +157,19 @@ type GPUUnitSSHSpec struct {
 	FRPImage     string `json:"frpImage,omitempty"`
 }
 
+// GPUUnitServerlessSpec records the serverless control-plane contract associated with one runtime unit.
+type GPUUnitServerlessSpec struct {
+	Enabled bool `json:"enabled,omitempty"`
+	// RequestID is the control-plane generated serverless request identifier shared by queued invocations and worker pools.
+	RequestID string `json:"requestID,omitempty"`
+	// +kubebuilder:validation:Minimum=0
+	MinAvailableCount int32 `json:"minAvailableCount,omitempty"`
+	// +kubebuilder:validation:Minimum=0
+	IdleTimeoutSeconds int32 `json:"idleTimeoutSeconds,omitempty"`
+	// +kubebuilder:validation:Minimum=0
+	MinRequestCount int32 `json:"minRequestCount,omitempty"`
+}
+
 // GPUUnitStorageMount declares one named storage attachment for the runtime container.
 type GPUUnitStorageMount struct {
 	Name      string `json:"name"`
@@ -187,6 +200,9 @@ type GPUUnitSpec struct {
 
 	// SSH declares whether the platform should inject a shell sidecar and FRP tunnel for user access.
 	SSH GPUUnitSSHSpec `json:"ssh,omitempty"`
+
+	// Serverless records the control-plane serverless policy associated with this unit.
+	Serverless GPUUnitServerlessSpec `json:"serverless,omitempty"`
 
 	// StorageMounts declares the persistent storage attachments mounted into the runtime.
 	StorageMounts []GPUUnitStorageMount `json:"storageMounts,omitempty"`

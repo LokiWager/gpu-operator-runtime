@@ -26,6 +26,9 @@ func TestLoadManagerConfigMergesDefaults(t *testing.T) {
 	if len(cfg.BlockedEgressCIDRs) != len(defaultBlockedEgressCIDRs) {
 		t.Fatalf("expected default blocked cidrs, got %+v", cfg.BlockedEgressCIDRs)
 	}
+	if cfg.Serverless.SubjectPrefix != "runtime.serverless" {
+		t.Fatalf("expected default serverless subject prefix, got %s", cfg.Serverless.SubjectPrefix)
+	}
 	for i := range defaultBlockedEgressCIDRs {
 		if cfg.BlockedEgressCIDRs[i] != defaultBlockedEgressCIDRs[i] {
 			t.Fatalf("expected blocked cidr %q at index %d, got %+v", defaultBlockedEgressCIDRs[i], i, cfg.BlockedEgressCIDRs)

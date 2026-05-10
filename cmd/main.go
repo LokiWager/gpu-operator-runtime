@@ -37,6 +37,7 @@ import (
 	appconfig "github.com/loki/gpu-operator-runtime/pkg/config"
 	"github.com/loki/gpu-operator-runtime/pkg/jobs"
 	runtimemetrics "github.com/loki/gpu-operator-runtime/pkg/metrics"
+	"github.com/loki/gpu-operator-runtime/pkg/serverless"
 	"github.com/loki/gpu-operator-runtime/pkg/service"
 )
 
@@ -140,6 +141,12 @@ func main() {
 	appLogger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	svc := service.New(kubeClient, mgr.GetClient(), appLogger)
 	svc.ConfigureNvidiaMetrics(cfg.NvidiaMetricsEndpoint, nil)
+	serverlessPublisher, err := serverless.NewNATSPublisher(context.Background(), cfg.Serverless, appLogger)
+	if err != nil {
+		setupLog.Error(err, "Failed to configure serverless queue publisher")
+		os.Exit(1)
+	}
+	svc.ConfigureServerlessPublisher(serverlessPublisher)
 	if err := runtimemetrics.RegisterRuntimeCollector(svc); err != nil {
 		setupLog.Error(err, "Failed to register runtime metrics collector")
 		os.Exit(1)

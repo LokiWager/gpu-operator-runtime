@@ -34,6 +34,11 @@ type OperatorJobResponse struct {
 	Data domain.OperatorJob `json:"data"`
 }
 
+// ServerlessInvocationResponse wraps one queued serverless invocation acknowledgement.
+type ServerlessInvocationResponse struct {
+	Data domain.ServerlessInvocationAck `json:"data"`
+}
+
 // ErrorResponse wraps one API error payload for Swagger generation.
 type ErrorResponse struct {
 	Error *APIError `json:"error"`

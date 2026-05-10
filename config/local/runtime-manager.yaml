@@ -12,3 +12,11 @@ blockedEgressCIDRs:
   - "172.16.0.0/12"
   - "192.168.0.0/16"
 nvidiaMetricsEndpoint: ""
+serverless:
+  url: ""
+  subjectPrefix: "runtime.serverless"
+  streamName: "RUNTIME_SERVERLESS"
+  streamReplicas: 1
+  streamMaxAge: "72h"
+  connectTimeout: "5s"
+  duplicatesWindow: "24h"

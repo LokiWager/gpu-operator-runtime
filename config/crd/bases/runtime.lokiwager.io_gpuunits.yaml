@@ -71,6 +71,29 @@ spec:
               memory:
                 description: Memory is the memory request/limit for the unit workload.
                 type: string
+              serverless:
+                description: Serverless records the control-plane serverless policy
+                  associated with this unit.
+                properties:
+                  enabled:
+                    type: boolean
+                  idleTimeoutSeconds:
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  minAvailableCount:
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  minRequestCount:
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  requestID:
+                    description: RequestID is the control-plane generated serverless
+                      request identifier shared by queued invocations and worker pools.
+                    type: string
+                type: object
               specName:
                 description: SpecName is the requested runtime flavor, for example
                   "g1.1".

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -16,6 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	runtimev1alpha1 "github.com/loki/gpu-operator-runtime/api/v1alpha1"
+	"github.com/loki/gpu-operator-runtime/pkg/serverless"
 	"github.com/loki/gpu-operator-runtime/pkg/service"
 )
 
@@ -47,6 +49,56 @@ func newOperatorBackedHandler(t *testing.T) (http.Handler, *service.Service, ctr
 	go svc.StartOperatorJobWorker(ctx)
 
 	return h, svc, operatorClient, cancel
+}
+
+func newServerlessHandler(t *testing.T, publisher serverless.InvocationPublisher) http.Handler {
+	t.Helper()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	svc := service.New(nil, nil, logger)
+	svc.ConfigureServerlessPublisher(publisher)
+	return NewServer(svc, logger)
+}
+
+type fakeInvocationPublisher struct {
+	enabled bool
+	ack     serverless.PublishAck
+	err     error
+}
+
+func (f fakeInvocationPublisher) Enabled() bool {
+	return f.enabled
+}
+
+func (f fakeInvocationPublisher) PublishInvocation(_ context.Context, msg serverless.InvocationMessage) (serverless.PublishAck, error) {
+	if f.err != nil {
+		return serverless.PublishAck{}, f.err
+	}
+	ack := f.ack
+	if ack.InvocationID == "" {
+		ack.InvocationID = msg.InvocationID
+	}
+	if ack.ServerlessRequestID == "" {
+		ack.ServerlessRequestID = msg.ServerlessRequestID
+	}
+	if ack.Mode == "" {
+		ack.Mode = msg.Mode
+	}
+	if ack.Subject == "" {
+		ack.Subject = "runtime.serverless.invoke." + msg.ServerlessRequestID
+	}
+	if ack.ResultSubject == "" {
+		ack.ResultSubject = "runtime.serverless.result." + msg.ServerlessRequestID
+	}
+	if ack.MetricsSubject == "" {
+		ack.MetricsSubject = "runtime.serverless.metrics." + msg.ServerlessRequestID
+	}
+	if ack.Stream == "" {
+		ack.Stream = "RUNTIME_SERVERLESS"
+	}
+	if ack.AcceptedAt.IsZero() {
+		ack.AcceptedAt = time.Unix(1700000000, 0).UTC()
+	}
+	return ack, nil
 }
 
 func TestServer_Health(t *testing.T) {
@@ -166,6 +218,54 @@ func TestServer_CreateGPUUnit(t *testing.T) {
 	h.ServeHTTP(w, req)
 	if w.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestServer_CreateServerlessInvocationWithoutQueue(t *testing.T) {
+	h := newTestHandler(t)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/serverless/invocations", strings.NewReader(`{"serverlessRequestID":"sd-webui","mode":"async","payload":{"prompt":"hello"}}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestServer_CreateServerlessInvocationAccepted(t *testing.T) {
+	h := newServerlessHandler(t, fakeInvocationPublisher{
+		enabled: true,
+		ack: serverless.PublishAck{
+			Sequence:  42,
+			Duplicate: false,
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/serverless/invocations", strings.NewReader(`{"serverlessRequestID":"sd-webui","mode":"sync","payload":{"prompt":"hello"}}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestServer_CreateServerlessInvocationDuplicate(t *testing.T) {
+	h := newServerlessHandler(t, fakeInvocationPublisher{
+		enabled: true,
+		ack: serverless.PublishAck{
+			Sequence:  43,
+			Duplicate: true,
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/serverless/invocations", strings.NewReader(`{"serverlessRequestID":"sd-webui","mode":"async","payload":{"prompt":"hello"}}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
 	}
 }
 

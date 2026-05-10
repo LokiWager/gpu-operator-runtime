@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/loki/gpu-operator-runtime/pkg/serverless"
 	"gopkg.in/yaml.v3"
 )
 
@@ -21,15 +22,16 @@ var defaultBlockedEgressCIDRs = []string{
 
 // ManagerConfig captures the local process settings for the shared runtime manager.
 type ManagerConfig struct {
-	MetricsBindAddress     string   `yaml:"metricsBindAddress"`
-	HealthProbeBindAddress string   `yaml:"healthProbeBindAddress"`
-	HTTPAddr               string   `yaml:"httpAddr"`
-	ReportInterval         string   `yaml:"reportInterval"`
-	LeaderElect            bool     `yaml:"leaderElect"`
-	MetricsSecure          bool     `yaml:"metricsSecure"`
-	EnableHTTP2            bool     `yaml:"enableHTTP2"`
-	BlockedEgressCIDRs     []string `yaml:"blockedEgressCIDRs"`
-	NvidiaMetricsEndpoint  string   `yaml:"nvidiaMetricsEndpoint"`
+	MetricsBindAddress     string                `yaml:"metricsBindAddress"`
+	HealthProbeBindAddress string                `yaml:"healthProbeBindAddress"`
+	HTTPAddr               string                `yaml:"httpAddr"`
+	ReportInterval         string                `yaml:"reportInterval"`
+	LeaderElect            bool                  `yaml:"leaderElect"`
+	MetricsSecure          bool                  `yaml:"metricsSecure"`
+	EnableHTTP2            bool                  `yaml:"enableHTTP2"`
+	BlockedEgressCIDRs     []string              `yaml:"blockedEgressCIDRs"`
+	NvidiaMetricsEndpoint  string                `yaml:"nvidiaMetricsEndpoint"`
+	Serverless             serverless.NATSConfig `yaml:"serverless"`
 }
 
 // DefaultManagerConfig returns the baseline local development settings.
@@ -43,6 +45,7 @@ func DefaultManagerConfig() ManagerConfig {
 		MetricsSecure:          true,
 		EnableHTTP2:            false,
 		BlockedEgressCIDRs:     append([]string(nil), defaultBlockedEgressCIDRs...),
+		Serverless:             serverless.DefaultNATSConfig(),
 	}
 }
 

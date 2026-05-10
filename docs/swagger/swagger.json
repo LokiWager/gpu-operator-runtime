@@ -698,6 +698,64 @@
                     }
                 }
             }
+        },
+        "/serverless/invocations": {
+            "post": {
+                "description": "Persist one serverless invocation into the configured NATS JetStream ingress stream. This chapter only builds the queue-first ingress contract, so the response acknowledges durable enqueueing rather than worker execution.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "serverless"
+                ],
+                "summary": "Enqueue a serverless invocation",
+                "parameters": [
+                    {
+                        "description": "Create serverless invocation request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/contract.CreateServerlessInvocationRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.ServerlessInvocationResponse"
+                        }
+                    },
+                    "202": {
+                        "description": "Accepted",
+                        "schema": {
+                            "$ref": "#/definitions/api.ServerlessInvocationResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
         }
     },
     "definitions": {
@@ -774,6 +832,14 @@
                 }
             }
         },
+        "api.ServerlessInvocationResponse": {
+            "type": "object",
+            "properties": {
+                "data": {
+                    "$ref": "#/definitions/domain.ServerlessInvocationAck"
+                }
+            }
+        },
         "contract.CreateGPUUnitRequest": {
             "type": "object",
             "properties": {
@@ -788,6 +854,9 @@
                 },
                 "operationID": {
                     "type": "string"
+                },
+                "serverless": {
+                    "$ref": "#/definitions/v1alpha1.GPUUnitServerlessSpec"
                 },
                 "specName": {
                     "type": "string"
@@ -806,6 +875,44 @@
                 }
             }
         },
+        "contract.CreateServerlessInvocationRequest": {
+            "type": "object",
+            "properties": {
+                "attributes": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "string"
+                    }
+                },
+                "contentType": {
+                    "type": "string"
+                },
+                "headers": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "string"
+                    }
+                },
+                "invocationID": {
+                    "type": "string"
+                },
+                "mode": {
+                    "$ref": "#/definitions/serverless.InvocationMode"
+                },
+                "payload": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                },
+                "serverlessRequestID": {
+                    "type": "string"
+                },
+                "timeoutSeconds": {
+                    "type": "integer"
+                }
+            }
+        },
         "contract.UpdateGPUUnitRequest": {
             "type": "object",
             "properties": {
@@ -814,6 +921,9 @@
                 },
                 "image": {
                     "type": "string"
+                },
+                "serverless": {
+                    "$ref": "#/definitions/v1alpha1.GPUUnitServerlessSpec"
                 },
                 "ssh": {
                     "$ref": "#/definitions/v1alpha1.GPUUnitSSHSpec"
@@ -946,6 +1056,9 @@
                 },
                 "reason": {
                     "type": "string"
+                },
+                "serverless": {
+                    "$ref": "#/definitions/v1alpha1.GPUUnitServerlessSpec"
                 },
                 "serviceName": {
                     "type": "string"
@@ -1083,6 +1196,52 @@
                 "OperatorJobRunning",
                 "OperatorJobSucceeded",
                 "OperatorJobFailed"
+            ]
+        },
+        "domain.ServerlessInvocationAck": {
+            "type": "object",
+            "properties": {
+                "acceptedAt": {
+                    "type": "string"
+                },
+                "duplicate": {
+                    "type": "boolean"
+                },
+                "invocationID": {
+                    "type": "string"
+                },
+                "metricsSubject": {
+                    "type": "string"
+                },
+                "mode": {
+                    "type": "string"
+                },
+                "resultSubject": {
+                    "type": "string"
+                },
+                "sequence": {
+                    "type": "integer"
+                },
+                "serverlessRequestID": {
+                    "type": "string"
+                },
+                "stream": {
+                    "type": "string"
+                },
+                "subject": {
+                    "type": "string"
+                }
+            }
+        },
+        "serverless.InvocationMode": {
+            "type": "string",
+            "enum": [
+                "async",
+                "sync"
+            ],
+            "x-enum-varnames": [
+                "InvocationModeAsync",
+                "InvocationModeSync"
             ]
         },
         "service.CreateGPUStorageRequest": {
@@ -1328,6 +1487,30 @@
                     "type": "string"
                 },
                 "username": {
+                    "type": "string"
+                }
+            }
+        },
+        "v1alpha1.GPUUnitServerlessSpec": {
+            "type": "object",
+            "properties": {
+                "enabled": {
+                    "type": "boolean"
+                },
+                "idleTimeoutSeconds": {
+                    "description": "+kubebuilder:validation:Minimum=0",
+                    "type": "integer"
+                },
+                "minAvailableCount": {
+                    "description": "+kubebuilder:validation:Minimum=0",
+                    "type": "integer"
+                },
+                "minRequestCount": {
+                    "description": "+kubebuilder:validation:Minimum=0",
+                    "type": "integer"
+                },
+                "requestID": {
+                    "description": "RequestID is the control-plane generated serverless request identifier shared by queued invocations and worker pools.",
                     "type": "string"
                 }
             }

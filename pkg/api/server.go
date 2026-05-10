@@ -67,6 +67,7 @@ func (s *Server) routes() {
 	s.echo.GET("/api/v1/gpu-units/:name", s.handleGetGPUUnit)
 	s.echo.PUT("/api/v1/gpu-units/:name", s.handleUpdateGPUUnit)
 	s.echo.DELETE("/api/v1/gpu-units/:name", s.handleDeleteGPUUnit)
+	s.echo.POST("/api/v1/serverless/invocations", s.handleCreateServerlessInvocation)
 	s.echo.POST("/api/v1/operator/stock-units", s.handleCreateStockUnits)
 	s.echo.GET("/api/v1/operator/jobs/:operationID", s.handleOperatorJobByID)
 }
@@ -322,6 +323,39 @@ func (s *Server) handleDeleteGPUUnit(c echo.Context) error {
 	return c.NoContent(http.StatusNoContent)
 }
 
+// handleCreateServerlessInvocation godoc
+// @Summary Enqueue a serverless invocation
+// @Description Persist one serverless invocation into the configured NATS JetStream ingress stream. This chapter only builds the queue-first ingress contract, so the response acknowledges durable enqueueing rather than worker execution.
+// @Tags serverless
+// @Accept json
+// @Produce json
+// @Param request body contract.CreateServerlessInvocationRequest true "Create serverless invocation request"
+// @Success 200 {object} ServerlessInvocationResponse
+// @Success 202 {object} ServerlessInvocationResponse
+// @Failure 400 {object} ErrorResponse
+// @Failure 503 {object} ErrorResponse
+// @Failure 500 {object} ErrorResponse
+// @Router /serverless/invocations [post]
+func (s *Server) handleCreateServerlessInvocation(c echo.Context) error {
+	var req service.CreateServerlessInvocationRequest
+	if err := c.Bind(&req); err != nil {
+		return writeError(c, http.StatusBadRequest, "invalid_request", err.Error())
+	}
+	req, err := contract.NormalizeCreateServerlessInvocationRequest(req)
+	if err != nil {
+		return writeServiceError(c, err, "invalid_request")
+	}
+
+	ack, accepted, err := s.service.CreateServerlessInvocation(c.Request().Context(), req)
+	if err != nil {
+		return writeServiceError(c, err, "enqueue_serverless_invocation_failed")
+	}
+	if accepted {
+		return writeData(c, http.StatusAccepted, ack)
+	}
+	return writeData(c, http.StatusOK, ack)
+}
+
 // handleCreateStockUnits godoc
 // @Summary Seed stock units
 // @Description Submit an operator request that creates stock GPUUnit objects in the stock namespace using the built-in reservation image. Replays with the same operationID and payload are idempotent.
@@ -442,7 +476,7 @@ func writeServiceError(c echo.Context, err error, fallbackCode string) error {
 
 	var unavailableErr *service.UnavailableError
 	if errors.As(err, &unavailableErr) {
-		return writeError(c, http.StatusServiceUnavailable, "operator_unavailable", unavailableErr.Error())
+		return writeError(c, http.StatusServiceUnavailable, "service_unavailable", unavailableErr.Error())
 	}
 
 	return writeError(c, http.StatusInternalServerError, fallbackCode, err.Error())

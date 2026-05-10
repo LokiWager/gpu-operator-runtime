@@ -20,6 +20,7 @@ type CreateGPUUnitRequest struct {
 	Template      runtimev1alpha1.GPUUnitTemplate       `json:"template,omitempty"`
 	Access        runtimev1alpha1.GPUUnitAccess         `json:"access,omitempty"`
 	SSH           runtimev1alpha1.GPUUnitSSHSpec        `json:"ssh,omitempty"`
+	Serverless    runtimev1alpha1.GPUUnitServerlessSpec `json:"serverless,omitempty"`
 	StorageMounts []runtimev1alpha1.GPUUnitStorageMount `json:"storageMounts,omitempty"`
 }
 
@@ -29,6 +30,7 @@ type UpdateGPUUnitRequest struct {
 	Template      runtimev1alpha1.GPUUnitTemplate        `json:"template,omitempty"`
 	Access        runtimev1alpha1.GPUUnitAccess          `json:"access,omitempty"`
 	SSH           *runtimev1alpha1.GPUUnitSSHSpec        `json:"ssh,omitempty"`
+	Serverless    *runtimev1alpha1.GPUUnitServerlessSpec `json:"serverless,omitempty"`
 	StorageMounts *[]runtimev1alpha1.GPUUnitStorageMount `json:"storageMounts,omitempty"`
 }
 
@@ -73,6 +75,12 @@ func NormalizeCreateGPUUnitRequest(req CreateGPUUnitRequest) (CreateGPUUnitReque
 	}
 	req.SSH = ssh
 
+	serverless, err := NormalizeGPUUnitServerless(req.Serverless)
+	if err != nil {
+		return CreateGPUUnitRequest{}, err
+	}
+	req.Serverless = serverless
+
 	mounts, err := NormalizeGPUUnitStorageMounts(req.StorageMounts)
 	if err != nil {
 		return CreateGPUUnitRequest{}, err
@@ -101,6 +109,14 @@ func NormalizeUpdateGPUUnitRequest(unitName, namespace string, req UpdateGPUUnit
 			return UpdateGPUUnitRequest{}, err
 		}
 		req.SSH = &normalized
+	}
+
+	if req.Serverless != nil {
+		normalized, err := NormalizeGPUUnitServerless(*req.Serverless)
+		if err != nil {
+			return UpdateGPUUnitRequest{}, err
+		}
+		req.Serverless = &normalized
 	}
 
 	if req.StorageMounts != nil {

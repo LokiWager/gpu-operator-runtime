@@ -24,6 +24,12 @@ spec:
     domainSuffix: ssh.example.com
     authorizedKeys:
       - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA== demo@example
+  serverless:
+    enabled: true
+    requestID: sd-webui
+    minAvailableCount: 1
+    idleTimeoutSeconds: 300
+    minRequestCount: 0
   template:
     command:
       - python

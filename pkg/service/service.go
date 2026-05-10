@@ -24,6 +24,7 @@ import (
 
 	runtimev1alpha1 "github.com/loki/gpu-operator-runtime/api/v1alpha1"
 	"github.com/loki/gpu-operator-runtime/pkg/domain"
+	"github.com/loki/gpu-operator-runtime/pkg/serverless"
 )
 
 // CreateStockUnitsRequest describes one idempotent request to seed stock units.
@@ -52,6 +53,7 @@ type Service struct {
 	startedAt             time.Time
 	httpClient            *http.Client
 	nvidiaMetricsEndpoint string
+	serverlessPublisher   serverless.InvocationPublisher
 
 	unitMu        sync.Mutex
 	jobMu         sync.RWMutex
@@ -80,6 +82,11 @@ func (s *Service) ConfigureNvidiaMetrics(endpoint string, httpClient *http.Clien
 	if httpClient != nil {
 		s.httpClient = httpClient
 	}
+}
+
+// ConfigureServerlessPublisher wires an optional NATS-backed queue publisher into the serverless ingress surface.
+func (s *Service) ConfigureServerlessPublisher(publisher serverless.InvocationPublisher) {
+	s.serverlessPublisher = publisher
 }
 
 // StartOperatorJobWorker drains async stock seeding jobs until the context is cancelled.

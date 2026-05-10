@@ -73,6 +73,7 @@ type GPUUnitRuntime struct {
 	Template             runtimev1alpha1.GPUUnitTemplate       `json:"template,omitempty"`
 	Access               runtimev1alpha1.GPUUnitAccess         `json:"access,omitempty"`
 	SSH                  runtimev1alpha1.GPUUnitSSHSpec        `json:"ssh,omitempty"`
+	Serverless           runtimev1alpha1.GPUUnitServerlessSpec `json:"serverless,omitempty"`
 	StorageMounts        []runtimev1alpha1.GPUUnitStorageMount `json:"storageMounts,omitempty"`
 	Phase                string                                `json:"phase"`
 	ReadyReplicas        int32                                 `json:"readyReplicas"`
@@ -83,6 +84,20 @@ type GPUUnitRuntime struct {
 	SSHStatus            runtimev1alpha1.GPUUnitSSHStatus      `json:"sshStatus,omitempty"`
 	Reason               string                                `json:"reason,omitempty"`
 	Message              string                                `json:"message,omitempty"`
+}
+
+// ServerlessInvocationAck is the API-facing acknowledgement for one queued serverless invocation.
+type ServerlessInvocationAck struct {
+	InvocationID        string    `json:"invocationID"`
+	ServerlessRequestID string    `json:"serverlessRequestID"`
+	Mode                string    `json:"mode"`
+	Subject             string    `json:"subject"`
+	ResultSubject       string    `json:"resultSubject"`
+	MetricsSubject      string    `json:"metricsSubject"`
+	Stream              string    `json:"stream"`
+	Sequence            uint64    `json:"sequence"`
+	Duplicate           bool      `json:"duplicate"`
+	AcceptedAt          time.Time `json:"acceptedAt"`
 }
 
 // GPUStorageRuntime is the API-facing view of a GPUStorage object.

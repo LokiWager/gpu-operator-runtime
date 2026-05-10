@@ -46,6 +46,11 @@ definitions:
       data:
         $ref: '#/definitions/domain.OperatorJob'
     type: object
+  api.ServerlessInvocationResponse:
+    properties:
+      data:
+        $ref: '#/definitions/domain.ServerlessInvocationAck'
+    type: object
   contract.CreateGPUUnitRequest:
     properties:
       access:
@@ -56,6 +61,8 @@ definitions:
         type: string
       operationID:
         type: string
+      serverless:
+        $ref: '#/definitions/v1alpha1.GPUUnitServerlessSpec'
       specName:
         type: string
       ssh:
@@ -67,12 +74,39 @@ definitions:
       template:
         $ref: '#/definitions/v1alpha1.GPUUnitTemplate'
     type: object
+  contract.CreateServerlessInvocationRequest:
+    properties:
+      attributes:
+        additionalProperties:
+          type: string
+        type: object
+      contentType:
+        type: string
+      headers:
+        additionalProperties:
+          type: string
+        type: object
+      invocationID:
+        type: string
+      mode:
+        $ref: '#/definitions/serverless.InvocationMode'
+      payload:
+        items:
+          type: integer
+        type: array
+      serverlessRequestID:
+        type: string
+      timeoutSeconds:
+        type: integer
+    type: object
   contract.UpdateGPUUnitRequest:
     properties:
       access:
         $ref: '#/definitions/v1alpha1.GPUUnitAccess'
       image:
         type: string
+      serverless:
+        $ref: '#/definitions/v1alpha1.GPUUnitServerlessSpec'
       ssh:
         $ref: '#/definitions/v1alpha1.GPUUnitSSHSpec'
       storageMounts:
@@ -160,6 +194,8 @@ definitions:
         type: integer
       reason:
         type: string
+      serverless:
+        $ref: '#/definitions/v1alpha1.GPUUnitServerlessSpec'
       serviceName:
         type: string
       sourceStockName:
@@ -253,6 +289,37 @@ definitions:
     - OperatorJobRunning
     - OperatorJobSucceeded
     - OperatorJobFailed
+  domain.ServerlessInvocationAck:
+    properties:
+      acceptedAt:
+        type: string
+      duplicate:
+        type: boolean
+      invocationID:
+        type: string
+      metricsSubject:
+        type: string
+      mode:
+        type: string
+      resultSubject:
+        type: string
+      sequence:
+        type: integer
+      serverlessRequestID:
+        type: string
+      stream:
+        type: string
+      subject:
+        type: string
+    type: object
+  serverless.InvocationMode:
+    enum:
+    - async
+    - sync
+    type: string
+    x-enum-varnames:
+    - InvocationModeAsync
+    - InvocationModeSync
   service.CreateGPUStorageRequest:
     properties:
       accessor:
@@ -432,6 +499,24 @@ definitions:
       targetHost:
         type: string
       username:
+        type: string
+    type: object
+  v1alpha1.GPUUnitServerlessSpec:
+    properties:
+      enabled:
+        type: boolean
+      idleTimeoutSeconds:
+        description: +kubebuilder:validation:Minimum=0
+        type: integer
+      minAvailableCount:
+        description: +kubebuilder:validation:Minimum=0
+        type: integer
+      minRequestCount:
+        description: +kubebuilder:validation:Minimum=0
+        type: integer
+      requestID:
+        description: RequestID is the control-plane generated serverless request identifier
+          shared by queued invocations and worker pools.
         type: string
     type: object
   v1alpha1.GPUUnitStorageMount:
@@ -939,6 +1024,46 @@ paths:
       summary: Seed stock units
       tags:
       - operator
+  /serverless/invocations:
+    post:
+      consumes:
+      - application/json
+      description: Persist one serverless invocation into the configured NATS JetStream
+        ingress stream. This chapter only builds the queue-first ingress contract,
+        so the response acknowledges durable enqueueing rather than worker execution.
+      parameters:
+      - description: Create serverless invocation request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/contract.CreateServerlessInvocationRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.ServerlessInvocationResponse'
+        "202":
+          description: Accepted
+          schema:
+            $ref: '#/definitions/api.ServerlessInvocationResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+      summary: Enqueue a serverless invocation
+      tags:
+      - serverless
 schemes:
 - http
 swagger: "2.0"
