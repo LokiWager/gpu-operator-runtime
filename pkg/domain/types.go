@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"encoding/json"
 	"time"
 
 	runtimev1alpha1 "github.com/loki/gpu-operator-runtime/api/v1alpha1"
@@ -98,6 +99,22 @@ type ServerlessInvocationAck struct {
 	Sequence            uint64    `json:"sequence"`
 	Duplicate           bool      `json:"duplicate"`
 	AcceptedAt          time.Time `json:"acceptedAt"`
+}
+
+// ServerlessInvocationResult is the API-facing sync execution result returned once the worker-side reply path publishes a result.
+type ServerlessInvocationResult struct {
+	InvocationID        string            `json:"invocationID"`
+	ServerlessRequestID string            `json:"serverlessRequestID"`
+	Mode                string            `json:"mode"`
+	WorkerName          string            `json:"workerName,omitempty"`
+	WorkerNamespace     string            `json:"workerNamespace,omitempty"`
+	StatusCode          int               `json:"statusCode,omitempty"`
+	ContentType         string            `json:"contentType,omitempty"`
+	Headers             map[string]string `json:"headers,omitempty"`
+	Body                json.RawMessage   `json:"body,omitempty"`
+	Error               string            `json:"error,omitempty"`
+	StartedAt           time.Time         `json:"startedAt,omitempty"`
+	CompletedAt         time.Time         `json:"completedAt"`
 }
 
 // GPUStorageRuntime is the API-facing view of a GPUStorage object.

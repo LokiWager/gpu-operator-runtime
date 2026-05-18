@@ -1029,8 +1029,9 @@ paths:
       consumes:
       - application/json
       description: Persist one serverless invocation into the configured NATS JetStream
-        ingress stream. This chapter only builds the queue-first ingress contract,
-        so the response acknowledges durable enqueueing rather than worker execution.
+        ingress stream. Async mode returns the durable enqueue acknowledgement, while
+        sync mode waits on the invocation-specific reply subject for the worker-side
+        result path.
       parameters:
       - description: Create serverless invocation request
         in: body

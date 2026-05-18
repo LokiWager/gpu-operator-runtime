@@ -705,7 +705,7 @@ const docTemplate = `{
         },
         "/serverless/invocations": {
             "post": {
-                "description": "Persist one serverless invocation into the configured NATS JetStream ingress stream. This chapter only builds the queue-first ingress contract, so the response acknowledges durable enqueueing rather than worker execution.",
+                "description": "Persist one serverless invocation into the configured NATS JetStream ingress stream. Async mode returns the durable enqueue acknowledgement, while sync mode waits on the invocation-specific reply subject for the worker-side result path.",
                 "consumes": [
                     "application/json"
                 ],

@@ -1,0 +1,11 @@
+consumerName: "runtime-activator"
+workerReadyWait: "2m"
+workerPollInterval: "2s"
+serverless:
+  url: "nats://127.0.0.1:4222"
+  subjectPrefix: "runtime.serverless"
+  streamName: "RUNTIME_SERVERLESS"
+  streamReplicas: 1
+  streamMaxAge: "72h"
+  connectTimeout: "5s"
+  duplicatesWindow: "24h"

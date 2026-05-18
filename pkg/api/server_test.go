@@ -62,6 +62,7 @@ func newServerlessHandler(t *testing.T, publisher serverless.InvocationPublisher
 type fakeInvocationPublisher struct {
 	enabled bool
 	ack     serverless.PublishAck
+	result  serverless.InvocationResultMessage
 	err     error
 }
 
@@ -99,6 +100,27 @@ func (f fakeInvocationPublisher) PublishInvocation(_ context.Context, msg server
 		ack.AcceptedAt = time.Unix(1700000000, 0).UTC()
 	}
 	return ack, nil
+}
+
+func (f fakeInvocationPublisher) RequestSyncInvocation(_ context.Context, msg serverless.InvocationMessage) (serverless.PublishAck, serverless.InvocationResultMessage, error) {
+	ack, err := f.PublishInvocation(context.Background(), msg)
+	if err != nil {
+		return serverless.PublishAck{}, serverless.InvocationResultMessage{}, err
+	}
+	result := f.result
+	if result.InvocationID == "" {
+		result.InvocationID = msg.InvocationID
+	}
+	if result.ServerlessRequestID == "" {
+		result.ServerlessRequestID = msg.ServerlessRequestID
+	}
+	if result.Mode == "" {
+		result.Mode = msg.Mode
+	}
+	if result.CompletedAt.IsZero() {
+		result.CompletedAt = time.Unix(1700000010, 0).UTC()
+	}
+	return ack, result, nil
 }
 
 func TestServer_Health(t *testing.T) {
@@ -236,9 +258,10 @@ func TestServer_CreateServerlessInvocationWithoutQueue(t *testing.T) {
 func TestServer_CreateServerlessInvocationAccepted(t *testing.T) {
 	h := newServerlessHandler(t, fakeInvocationPublisher{
 		enabled: true,
-		ack: serverless.PublishAck{
-			Sequence:  42,
-			Duplicate: false,
+		result: serverless.InvocationResultMessage{
+			StatusCode:  200,
+			ContentType: "application/json",
+			Body:        []byte(`{"ok":true}`),
 		},
 	})
 
@@ -246,8 +269,8 @@ func TestServer_CreateServerlessInvocationAccepted(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
-	if w.Code != http.StatusAccepted {
-		t.Fatalf("expected 202, got %d body=%s", w.Code, w.Body.String())
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
 	}
 }
 

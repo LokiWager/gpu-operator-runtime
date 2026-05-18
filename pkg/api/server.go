@@ -12,6 +12,7 @@ import (
 
 	_ "github.com/loki/gpu-operator-runtime/docs/swagger"
 	"github.com/loki/gpu-operator-runtime/pkg/contract"
+	"github.com/loki/gpu-operator-runtime/pkg/serverless"
 	"github.com/loki/gpu-operator-runtime/pkg/service"
 )
 
@@ -325,7 +326,7 @@ func (s *Server) handleDeleteGPUUnit(c echo.Context) error {
 
 // handleCreateServerlessInvocation godoc
 // @Summary Enqueue a serverless invocation
-// @Description Persist one serverless invocation into the configured NATS JetStream ingress stream. This chapter only builds the queue-first ingress contract, so the response acknowledges durable enqueueing rather than worker execution.
+// @Description Persist one serverless invocation into the configured NATS JetStream ingress stream. Async mode returns the durable enqueue acknowledgement, while sync mode waits on the invocation-specific reply subject for the worker-side result path.
 // @Tags serverless
 // @Accept json
 // @Produce json
@@ -344,6 +345,14 @@ func (s *Server) handleCreateServerlessInvocation(c echo.Context) error {
 	req, err := contract.NormalizeCreateServerlessInvocationRequest(req)
 	if err != nil {
 		return writeServiceError(c, err, "invalid_request")
+	}
+
+	if req.Mode == serverless.InvocationModeSync {
+		result, err := s.service.InvokeServerlessSync(c.Request().Context(), req)
+		if err != nil {
+			return writeServiceError(c, err, "invoke_serverless_sync_failed")
+		}
+		return writeData(c, http.StatusOK, result)
 	}
 
 	ack, accepted, err := s.service.CreateServerlessInvocation(c.Request().Context(), req)

@@ -2,16 +2,20 @@
 
 Teaching-oriented Golang + Kubernetes project for building a GPU runtime control plane.
 
-The current chapter introduces the first serverless-facing runtime contract and a queue-first ingress path:
+The current chapter adds a dedicated serverless activator and worker-dispatch contract on top of the queue-first ingress path:
 
-- `GPUUnit` can now record a `serverless` policy block owned by the control plane
-- the control plane-generated `requestID` is stored on the unit spec instead of being invented by the runtime
+- `GPUUnit` still records a `serverless` policy block owned by the control plane
+- the control plane-generated `requestID` still lives on the unit spec instead of being invented by the runtime
 - the manager can optionally connect to NATS JetStream for durable queue-first invocation ingress
-- `/api/v1/serverless/invocations` now persists invocation envelopes into JetStream before any worker executes them
-- synchronous and asynchronous invocation modes are now part of the shared message contract, even though the dedicated activator still comes in the next chapter
-- the standalone `image-accelerator` tool from Part 12 remains the cold-start preparation step for later serverless workers
+- `/api/v1/serverless/invocations` still persists invocation envelopes before any worker executes them
+- a new standalone `activator` process now consumes queued invocations, registers ready workers in memory, and publishes worker-targeted dispatch messages
+- when no ready worker exists, the activator can create another `GPUUnit` worker by cloning an existing serverless worker template and consuming new stock
+- the worker sidecar is the only component that should consume worker dispatch subjects and publish results or metrics back to NATS
+- the user-facing worker framework only talks to the local sidecar over an internal protocol such as UDS or localhost HTTPS; it should not hold NATS credentials directly
+- `mode: "sync"` and `mode: "async"` still share one ingress contract, with `sync` waiting on an invocation-specific reply path once the worker-side framework loop is present
+- the standalone `image-accelerator` tool from Part 12 remains the cold-start preparation step for later worker lifecycle work
 
-The operator API still seeds stock units into `runtime-stock`, and the runtime API still consumes ready stock into active `GPUUnit` objects in `runtime-instance`. This chapter adds the missing queue ingress boundary that later activator and worker-registration pieces can build on.
+The operator API still seeds stock units into `runtime-stock`, and the runtime API still consumes ready stock into active `GPUUnit` objects in `runtime-instance`. This chapter connects that runtime layer to a dedicated activator so queued invocations can be turned into worker dispatch messages without bypassing the durable ingress boundary.
 
 ## Prerequisites
 
@@ -91,6 +95,12 @@ If you want to exercise the new queue-first serverless ingress locally, start a 
 nats-server -js
 ```
 
+Then start the dedicated activator in a fourth terminal:
+
+```bash
+GOTOOLCHAIN=go1.26.0 go run ./cmd/activator --config config/local/activator.yaml
+```
+
 Useful flags:
 
 - `--config` optional manager YAML config path; defaults to built-in values when omitted
@@ -111,6 +121,12 @@ serverless:
   duplicatesWindow: "24h"
 ```
 
+The dedicated activator has its own local YAML config:
+
+```bash
+cat config/local/activator.yaml
+```
+
 Example queue-first invocation request:
 
 ```bash
@@ -119,11 +135,17 @@ curl -X POST http://127.0.0.1:8080/api/v1/serverless/invocations \
   -d '{
     "serverlessRequestID": "sd-webui",
     "mode": "async",
+    "attributes": {
+      "path": "/generate",
+      "method": "POST"
+    },
     "payload": {
       "prompt": "draw a robot"
     }
   }'
 ```
+
+At this stage, the manager and activator cover ingress queueing and worker-targeted dispatch publication. The next worker-side chapter will add the sidecar and framework loop that consumes those dispatch subjects and publishes results, metrics, and sync replies.
 
 Build the standalone userspace image acceleration tool:
 

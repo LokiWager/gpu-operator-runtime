@@ -7,6 +7,7 @@ import (
 )
 
 var subjectTokenPattern = regexp.MustCompile(`^[a-z0-9_-]+$`)
+var invalidSubjectTokenPattern = regexp.MustCompile(`[^a-z0-9_-]+`)
 
 // NormalizeSubjectPrefix trims, defaults, and strips trailing separators from a subject prefix.
 func NormalizeSubjectPrefix(value string) string {
@@ -39,6 +40,11 @@ func ResultSubject(prefix, requestID string) string {
 	return fmt.Sprintf("%s.result.%s", NormalizeSubjectPrefix(prefix), requestID)
 }
 
+// DispatchSubject returns the NATS subject carrying worker-targeted dispatch messages for one ready worker sidecar.
+func DispatchSubject(prefix, requestID, workerName string) string {
+	return fmt.Sprintf("%s.dispatch.%s.%s", NormalizeSubjectPrefix(prefix), normalizeDispatchToken(requestID), normalizeDispatchToken(workerName))
+}
+
 // MetricsSubject returns the NATS subject carrying worker metrics and lifecycle events.
 func MetricsSubject(prefix, requestID string) string {
 	return fmt.Sprintf("%s.metrics.%s", NormalizeSubjectPrefix(prefix), requestID)
@@ -49,7 +55,20 @@ func StreamSubjects(prefix string) []string {
 	base := NormalizeSubjectPrefix(prefix)
 	return []string{
 		fmt.Sprintf("%s.invoke.*", base),
+		fmt.Sprintf("%s.dispatch.*.*", base),
 		fmt.Sprintf("%s.result.*", base),
 		fmt.Sprintf("%s.metrics.*", base),
 	}
+}
+
+func normalizeDispatchToken(value string) string {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	normalized = strings.ReplaceAll(normalized, ".", "-")
+	if normalized == "" {
+		return "unknown"
+	}
+	if subjectTokenPattern.MatchString(normalized) {
+		return normalized
+	}
+	return invalidSubjectTokenPattern.ReplaceAllString(normalized, "-")
 }
