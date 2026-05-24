@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"reflect"
 	"sort"
@@ -17,11 +18,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	runtimev1alpha1 "github.com/loki/gpu-operator-runtime/api/v1alpha1"
+	"github.com/loki/gpu-operator-runtime/pkg/serverless"
 )
 
 const kubeNamespaceMetadataLabelKey = "kubernetes.io/metadata.name"
 
-func desiredUnitNetworkPolicy(instance runtimev1alpha1.GPUUnit, blockedEgressCIDRs []string) (*networkingv1.NetworkPolicy, error) {
+func desiredUnitNetworkPolicy(instance runtimev1alpha1.GPUUnit, blockedEgressCIDRs []string, queueConfig serverless.NATSConfig) (*networkingv1.NetworkPolicy, error) {
 	labels := unitObjectLabels(instance)
 	normalizedBlockedCIDRs := normalizeBlockedEgressCIDRs(blockedEgressCIDRs)
 	egressRules := []networkingv1.NetworkPolicyEgressRule{
@@ -35,6 +37,13 @@ func desiredUnitNetworkPolicy(instance runtimev1alpha1.GPUUnit, blockedEgressCID
 	}
 	if sshRule, ok := explicitSSHServerEgressRule(sshSpec, normalizedBlockedCIDRs); ok {
 		egressRules = append(egressRules, sshRule)
+	}
+	serverlessRule, ok, err := explicitServerlessQueueEgressRule(instance.Spec.Serverless, queueConfig, normalizedBlockedCIDRs)
+	if err != nil {
+		return nil, err
+	}
+	if ok {
+		egressRules = append(egressRules, serverlessRule)
 	}
 
 	return &networkingv1.NetworkPolicy{
@@ -56,7 +65,7 @@ func desiredUnitNetworkPolicy(instance runtimev1alpha1.GPUUnit, blockedEgressCID
 }
 
 func (r *GPUUnitReconciler) reconcileGPUUnitNetworkPolicy(ctx context.Context, instance *runtimev1alpha1.GPUUnit) (bool, error) {
-	desired, err := desiredUnitNetworkPolicy(*instance, r.BlockedEgressCIDRs)
+	desired, err := desiredUnitNetworkPolicy(*instance, r.BlockedEgressCIDRs, r.ServerlessQueueConfig)
 	if err != nil {
 		return false, err
 	}
@@ -159,6 +168,63 @@ func explicitSSHServerEgressRule(
 			Port:     ptr.To(intstr.FromInt(int(sshSpec.ServerPort))),
 		}},
 	}, true
+}
+
+func explicitServerlessQueueEgressRule(
+	serverlessSpec runtimev1alpha1.GPUUnitServerlessSpec,
+	queueConfig serverless.NATSConfig,
+	blockedEgressCIDRs []string,
+) (networkingv1.NetworkPolicyEgressRule, bool, error) {
+	if !unitServerlessEnabled(serverlessSpec) || !queueConfig.Enabled() {
+		return networkingv1.NetworkPolicyEgressRule{}, false, nil
+	}
+
+	if queueConfig.UsesClusterServiceHost() {
+		namespace := queueConfig.EffectiveNetworkPolicyNamespace()
+		if namespace == "" || !queueConfig.HasNetworkPolicyTarget() {
+			return networkingv1.NetworkPolicyEgressRule{}, false, fmt.Errorf(
+				"%w: serverless.url %q points to an in-cluster service but serverless.networkPolicyTarget.namespace and podLabels are not fully configured",
+				errUnitServerlessSpecIncomplete,
+				queueConfig.URL,
+			)
+		}
+
+		tcp := corev1.ProtocolTCP
+		return networkingv1.NetworkPolicyEgressRule{
+			To: []networkingv1.NetworkPolicyPeer{{
+				NamespaceSelector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{
+						kubeNamespaceMetadataLabelKey: namespace,
+					},
+				},
+				PodSelector: &metav1.LabelSelector{
+					MatchLabels: queueConfig.NetworkPolicyTarget.PodLabels,
+				},
+			}},
+			Ports: []networkingv1.NetworkPolicyPort{{
+				Protocol: &tcp,
+				Port:     ptr.To(intstr.FromInt(queueConfig.URLPort())),
+			}},
+		}, true, nil
+	}
+	host := queueConfig.URLHostname()
+	ip := net.ParseIP(host)
+	if ip == nil || !ipOverlapsBlockedCIDRs(ip, blockedEgressCIDRs) {
+		return networkingv1.NetworkPolicyEgressRule{}, false, nil
+	}
+
+	tcp := corev1.ProtocolTCP
+	return networkingv1.NetworkPolicyEgressRule{
+		To: []networkingv1.NetworkPolicyPeer{{
+			IPBlock: &networkingv1.IPBlock{
+				CIDR: singleIPCIDR(ip),
+			},
+		}},
+		Ports: []networkingv1.NetworkPolicyPort{{
+			Protocol: &tcp,
+			Port:     ptr.To(intstr.FromInt(queueConfig.URLPort())),
+		}},
+	}, true, nil
 }
 
 func ipOverlapsBlockedCIDRs(ip net.IP, blockedEgressCIDRs []string) bool {

@@ -40,6 +40,7 @@ func gpuUnitRuntimeFromObject(instance *runtimev1alpha1.GPUUnit) domain.GPUUnitR
 		ServiceName:          instance.Status.ServiceName,
 		AccessURL:            instance.Status.AccessURL,
 		SSHStatus:            instance.Status.SSH,
+		ServerlessStatus:     instance.Status.Serverless,
 		Reason:               reason,
 		Message:              message,
 	}

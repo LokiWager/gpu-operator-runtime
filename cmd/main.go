@@ -81,6 +81,16 @@ func main() {
 		setupLog.Error(err, "Invalid blocked egress CIDRs in manager config", "config", configPath)
 		os.Exit(1)
 	}
+	serverlessCfg, err := cfg.Serverless.Normalized()
+	if err != nil {
+		setupLog.Error(err, "Invalid serverless queue config in manager config", "config", configPath)
+		os.Exit(1)
+	}
+	serverlessWorkerCfg, err := cfg.ServerlessWorker.Normalized()
+	if err != nil {
+		setupLog.Error(err, "Invalid serverless worker config in manager config", "config", configPath)
+		os.Exit(1)
+	}
 
 	if !cfg.EnableHTTP2 {
 		tlsOpts = append(tlsOpts, func(c *tls.Config) {
@@ -117,9 +127,11 @@ func main() {
 	}
 
 	if err := (&controller.GPUUnitReconciler{
-		Client:             mgr.GetClient(),
-		Scheme:             mgr.GetScheme(),
-		BlockedEgressCIDRs: blockedEgressCIDRs,
+		Client:                mgr.GetClient(),
+		Scheme:                mgr.GetScheme(),
+		BlockedEgressCIDRs:    blockedEgressCIDRs,
+		ServerlessQueueConfig: serverlessCfg,
+		ServerlessWorker:      serverlessWorkerCfg,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "GPUUnit")
 		os.Exit(1)
@@ -141,7 +153,7 @@ func main() {
 	appLogger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	svc := service.New(kubeClient, mgr.GetClient(), appLogger)
 	svc.ConfigureNvidiaMetrics(cfg.NvidiaMetricsEndpoint, nil)
-	serverlessPublisher, err := serverless.NewNATSPublisher(context.Background(), cfg.Serverless, appLogger)
+	serverlessPublisher, err := serverless.NewNATSPublisher(context.Background(), serverlessCfg, appLogger)
 	if err != nil {
 		setupLog.Error(err, "Failed to configure serverless queue publisher")
 		os.Exit(1)

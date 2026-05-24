@@ -106,6 +106,42 @@ func (p *NATSPublisher) PublishWorkerDispatch(ctx context.Context, msg WorkerDis
 	return nil
 }
 
+// PublishWorkerMetric marshals one worker lifecycle or execution event and publishes it durably for later autoscaling or debugging consumers.
+func (p *NATSPublisher) PublishWorkerMetric(ctx context.Context, metric WorkerMetricMessage) error {
+	if !p.Enabled() {
+		return fmt.Errorf("serverless queue publisher is not configured")
+	}
+
+	metric.Version = InvocationVersion
+	subject := MetricsSubject(p.cfg.SubjectPrefix, metric.ServerlessRequestID)
+
+	payload, err := json.Marshal(metric)
+	if err != nil {
+		return fmt.Errorf("marshal worker metric message: %w", err)
+	}
+
+	msgID := fmt.Sprintf(
+		"metric-%s-%s-%d",
+		normalizeDispatchToken(metric.WorkerName),
+		normalizeDispatchToken(string(metric.EventType)),
+		metric.ReportedAt.UnixNano(),
+	)
+	if metric.InvocationID != "" {
+		msgID = "metric-" + metric.InvocationID + "-" + normalizeDispatchToken(string(metric.EventType))
+	}
+	if _, err := p.js.Publish(ctx, subject, payload, jetstream.WithMsgID(msgID)); err != nil {
+		return fmt.Errorf("publish worker metric %s for %s: %w", metric.EventType, metric.WorkerName, err)
+	}
+
+	p.logger.Info("published worker metric",
+		"serverlessRequestID", metric.ServerlessRequestID,
+		"workerName", metric.WorkerName,
+		"eventType", metric.EventType,
+		"subject", subject,
+	)
+	return nil
+}
+
 // RequestSyncInvocation publishes one invocation and waits for the dedicated reply subject to return the worker-side result.
 func (p *NATSPublisher) RequestSyncInvocation(ctx context.Context, msg InvocationMessage) (PublishAck, InvocationResultMessage, error) {
 	if !p.Enabled() {
@@ -231,6 +267,73 @@ func (p *NATSPublisher) ConsumeInvocations(ctx context.Context, durable string, 
 		}
 		if err := batch.Error(); err != nil && ctx.Err() == nil {
 			return fmt.Errorf("consume invocation batch: %w", err)
+		}
+	}
+}
+
+// ConsumeWorkerDispatches drains worker-targeted dispatch messages for one concrete worker sidecar and acknowledges them on successful handling.
+func (p *NATSPublisher) ConsumeWorkerDispatches(
+	ctx context.Context,
+	durable string,
+	requestID string,
+	workerName string,
+	ackWait time.Duration,
+	handler func(context.Context, WorkerDispatchMessage) error,
+) error {
+	if !p.Enabled() {
+		return fmt.Errorf("serverless queue publisher is not configured")
+	}
+	if durable == "" {
+		return fmt.Errorf("worker dispatch durable name is required")
+	}
+	if handler == nil {
+		return fmt.Errorf("worker dispatch handler is required")
+	}
+
+	subject := DispatchSubject(p.cfg.SubjectPrefix, requestID, workerName)
+	consumer, err := p.js.CreateOrUpdateConsumer(ctx, p.cfg.StreamName, jetstream.ConsumerConfig{
+		Durable:       durable,
+		AckPolicy:     jetstream.AckExplicitPolicy,
+		FilterSubject: subject,
+		AckWait:       ackWait,
+	})
+	if err != nil {
+		return fmt.Errorf("create or update worker dispatch consumer %s: %w", durable, err)
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		default:
+		}
+
+		batch, err := consumer.Fetch(1, jetstream.FetchMaxWait(2*time.Second))
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+			return fmt.Errorf("fetch worker dispatch batch: %w", err)
+		}
+
+		for jsMsg := range batch.Messages() {
+			var msg WorkerDispatchMessage
+			if err := json.Unmarshal(jsMsg.Data(), &msg); err != nil {
+				p.logger.Error("discarding invalid worker dispatch payload", "subject", jsMsg.Subject(), "error", err)
+				_ = jsMsg.Term()
+				continue
+			}
+			if err := handler(ctx, msg); err != nil {
+				p.logger.Error("worker dispatch handling failed", "invocationID", msg.InvocationID, "workerName", msg.WorkerName, "error", err)
+				_ = jsMsg.NakWithDelay(2 * time.Second)
+				continue
+			}
+			if err := jsMsg.Ack(); err != nil {
+				return fmt.Errorf("ack worker dispatch %s: %w", msg.InvocationID, err)
+			}
+		}
+		if err := batch.Error(); err != nil && ctx.Err() == nil {
+			return fmt.Errorf("consume worker dispatch batch: %w", err)
 		}
 	}
 }

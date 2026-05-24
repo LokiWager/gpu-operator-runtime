@@ -1064,6 +1064,9 @@ const docTemplate = `{
                 "serverless": {
                     "$ref": "#/definitions/v1alpha1.GPUUnitServerlessSpec"
                 },
+                "serverlessStatus": {
+                    "$ref": "#/definitions/v1alpha1.GPUUnitServerlessStatus"
+                },
                 "serviceName": {
                     "type": "string"
                 },
@@ -1495,11 +1498,31 @@ const docTemplate = `{
                 }
             }
         },
+        "v1alpha1.GPUUnitServerlessFrameworkSpec": {
+            "type": "object",
+            "properties": {
+                "healthPath": {
+                    "description": "HealthPath is the local HTTP path polled over the unix domain socket before dispatch consumption starts.",
+                    "type": "string"
+                },
+                "invokePath": {
+                    "description": "InvokePath is the local HTTP path received over the unix domain socket from the sidecar.",
+                    "type": "string"
+                },
+                "socketPath": {
+                    "description": "SocketPath is the shared unix domain socket path used by the sidecar and framework containers.",
+                    "type": "string"
+                }
+            }
+        },
         "v1alpha1.GPUUnitServerlessSpec": {
             "type": "object",
             "properties": {
                 "enabled": {
                     "type": "boolean"
+                },
+                "framework": {
+                    "$ref": "#/definitions/v1alpha1.GPUUnitServerlessFrameworkSpec"
                 },
                 "idleTimeoutSeconds": {
                     "description": "+kubebuilder:validation:Minimum=0",
@@ -1515,6 +1538,26 @@ const docTemplate = `{
                 },
                 "requestID": {
                     "description": "RequestID is the control-plane generated serverless request identifier shared by queued invocations and worker pools.",
+                    "type": "string"
+                }
+            }
+        },
+        "v1alpha1.GPUUnitServerlessStatus": {
+            "type": "object",
+            "properties": {
+                "dispatchSubject": {
+                    "type": "string"
+                },
+                "healthPath": {
+                    "type": "string"
+                },
+                "invokePath": {
+                    "type": "string"
+                },
+                "phase": {
+                    "type": "string"
+                },
+                "socketPath": {
                     "type": "string"
                 }
             }

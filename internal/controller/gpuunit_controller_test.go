@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -18,6 +19,7 @@ import (
 
 	runtimev1alpha1 "github.com/loki/gpu-operator-runtime/api/v1alpha1"
 	appconfig "github.com/loki/gpu-operator-runtime/pkg/config"
+	"github.com/loki/gpu-operator-runtime/pkg/serverless"
 )
 
 func newControllerScheme(t *testing.T) *runtime.Scheme {
@@ -43,10 +45,16 @@ func newControllerScheme(t *testing.T) *runtime.Scheme {
 }
 
 func newGPUUnitReconciler(cl ctrlclient.Client, scheme *runtime.Scheme) *GPUUnitReconciler {
+	workerCfg, err := appconfig.DefaultManagerConfig().ServerlessWorker.Normalized()
+	if err != nil {
+		panic(err)
+	}
 	return &GPUUnitReconciler{
-		Client:             cl,
-		Scheme:             scheme,
-		BlockedEgressCIDRs: append([]string(nil), appconfig.DefaultManagerConfig().BlockedEgressCIDRs...),
+		Client:                cl,
+		Scheme:                scheme,
+		BlockedEgressCIDRs:    append([]string(nil), appconfig.DefaultManagerConfig().BlockedEgressCIDRs...),
+		ServerlessQueueConfig: appconfig.DefaultManagerConfig().Serverless,
+		ServerlessWorker:      workerCfg,
 	}
 }
 
@@ -796,5 +804,183 @@ func TestReconcileInstanceGPUUnitInitSidecarFailureMarksStatusFailed(t *testing.
 	}
 	if sshCond.Message != expectedReadyMessage {
 		t.Fatalf("unexpected ssh condition message: %s", sshCond.Message)
+	}
+}
+
+func TestReconcileInstanceGPUUnitInjectsServerlessSidecar(t *testing.T) {
+	scheme := newControllerScheme(t)
+
+	instance := &runtimev1alpha1.GPUUnit{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: runtimev1alpha1.GroupVersion.String(),
+			Kind:       "GPUUnit",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "sd-webui-template",
+			Namespace: runtimev1alpha1.DefaultInstanceNamespace,
+		},
+		Spec: runtimev1alpha1.GPUUnitSpec{
+			SpecName: "g1.1",
+			Image:    "python:3.12",
+			Memory:   "16Gi",
+			GPU:      1,
+			Template: runtimev1alpha1.GPUUnitTemplate{
+				Ports: []runtimev1alpha1.GPUUnitPortSpec{{
+					Name: "http",
+					Port: 8080,
+				}},
+			},
+			Access: runtimev1alpha1.GPUUnitAccess{
+				PrimaryPort: "http",
+				Scheme:      "http",
+			},
+			Serverless: runtimev1alpha1.GPUUnitServerlessSpec{
+				RequestID: "sd-webui",
+				Framework: runtimev1alpha1.GPUUnitServerlessFrameworkSpec{
+					SocketPath: runtimev1alpha1.DefaultServerlessFrameworkSocketPath,
+					InvokePath: "/invoke",
+					HealthPath: "/healthz",
+				},
+			},
+		},
+	}
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&runtimev1alpha1.GPUUnit{}).
+		WithObjects(instance).
+		Build()
+
+	reconciler := newGPUUnitReconciler(cl, scheme)
+	reconciler.ServerlessQueueConfig.URL = "nats://nats.messaging.svc.cluster.local:4222"
+	reconciler.ServerlessQueueConfig.NetworkPolicyTarget.Namespace = "messaging"
+	reconciler.ServerlessQueueConfig.NetworkPolicyTarget.PodLabels = map[string]string{
+		"app.kubernetes.io/name": "nats",
+	}
+
+	_, err := reconciler.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: instance.Namespace, Name: instance.Name},
+	})
+	if err != nil {
+		t.Fatalf("reconcile error: %v", err)
+	}
+
+	var dep appsv1.Deployment
+	if err := cl.Get(context.Background(), types.NamespacedName{Namespace: instance.Namespace, Name: deploymentNameForUnit(instance.Name)}, &dep); err != nil {
+		t.Fatalf("deployment should be created: %v", err)
+	}
+	if len(dep.Spec.Template.Spec.InitContainers) != 1 {
+		t.Fatalf("expected one restartable init sidecar, got %+v", dep.Spec.Template.Spec.InitContainers)
+	}
+	sidecar := dep.Spec.Template.Spec.InitContainers[0]
+	if sidecar.Name != runtimev1alpha1.ServerlessSidecarContainerName {
+		t.Fatalf("expected serverless sidecar %s, got %+v", runtimev1alpha1.ServerlessSidecarContainerName, sidecar)
+	}
+	if sidecar.RestartPolicy == nil || *sidecar.RestartPolicy != corev1.ContainerRestartPolicyAlways {
+		t.Fatalf("expected serverless sidecar restartPolicy=Always, got %+v", sidecar.RestartPolicy)
+	}
+	if sidecar.StartupProbe == nil || sidecar.StartupProbe.HTTPGet == nil || sidecar.StartupProbe.HTTPGet.Path != "/healthz" {
+		t.Fatalf("expected serverless sidecar startup probe on /healthz, got %+v", sidecar.StartupProbe)
+	}
+
+	runtimeContainer := dep.Spec.Template.Spec.Containers[0]
+	foundFrameworkSocketEnv := false
+	for _, env := range runtimeContainer.Env {
+		if env.Name == serverless.EnvFrameworkSocketPath && env.Value == runtimev1alpha1.DefaultServerlessFrameworkSocketPath {
+			foundFrameworkSocketEnv = true
+		}
+	}
+	if !foundFrameworkSocketEnv {
+		t.Fatalf("expected runtime container to receive framework envs, got %+v", runtimeContainer.Env)
+	}
+	if len(runtimeContainer.VolumeMounts) == 0 {
+		t.Fatalf("expected runtime container volume mounts, got %+v", runtimeContainer.VolumeMounts)
+	}
+	if len(sidecar.VolumeMounts) == 0 {
+		t.Fatalf("expected sidecar volume mounts, got %+v", sidecar.VolumeMounts)
+	}
+
+	var networkPolicy networkingv1.NetworkPolicy
+	if err := cl.Get(context.Background(), types.NamespacedName{Namespace: instance.Namespace, Name: networkPolicyNameForUnit(instance.Name)}, &networkPolicy); err != nil {
+		t.Fatalf("network policy should be created: %v", err)
+	}
+	foundNATSRule := false
+	for _, rule := range networkPolicy.Spec.Egress {
+		for _, peer := range rule.To {
+			if peer.NamespaceSelector == nil || peer.PodSelector == nil {
+				continue
+			}
+			if peer.NamespaceSelector.MatchLabels[kubeNamespaceMetadataLabelKey] != "messaging" {
+				continue
+			}
+			if peer.PodSelector.MatchLabels["app.kubernetes.io/name"] != "nats" {
+				continue
+			}
+			foundNATSRule = true
+		}
+	}
+	if !foundNATSRule {
+		t.Fatalf("expected explicit NATS egress rule, got %+v", networkPolicy.Spec.Egress)
+	}
+
+	var got runtimev1alpha1.GPUUnit
+	if err := cl.Get(context.Background(), types.NamespacedName{Namespace: instance.Namespace, Name: instance.Name}, &got); err != nil {
+		t.Fatalf("get gpu unit error: %v", err)
+	}
+	if got.Status.Serverless.Phase != runtimev1alpha1.UnitServerlessPhasePending {
+		t.Fatalf("expected pending serverless phase, got %+v", got.Status.Serverless)
+	}
+	if got.Status.Serverless.DispatchSubject != "runtime.serverless.dispatch.sd-webui.sd-webui-template" {
+		t.Fatalf("expected dispatch subject to be recorded, got %+v", got.Status.Serverless)
+	}
+	if got.Status.Serverless.SocketPath != runtimev1alpha1.DefaultServerlessFrameworkSocketPath {
+		t.Fatalf("expected socket path to be recorded, got %+v", got.Status.Serverless)
+	}
+	cond := apimeta.FindStatusCondition(got.Status.Conditions, runtimev1alpha1.ConditionServerlessReady)
+	if cond == nil || cond.Reason != runtimev1alpha1.ReasonUnitServerlessPending {
+		t.Fatalf("expected pending serverless condition, got %+v", cond)
+	}
+}
+
+func TestReconcileInstanceGPUUnitFailsWithoutClusterNATSTarget(t *testing.T) {
+	scheme := newControllerScheme(t)
+
+	instance := &runtimev1alpha1.GPUUnit{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: runtimev1alpha1.GroupVersion.String(),
+			Kind:       "GPUUnit",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "missing-nats-target",
+			Namespace: runtimev1alpha1.DefaultInstanceNamespace,
+		},
+		Spec: runtimev1alpha1.GPUUnitSpec{
+			SpecName: "g1.1",
+			Image:    "python:3.12",
+			Memory:   "16Gi",
+			GPU:      1,
+			Serverless: runtimev1alpha1.GPUUnitServerlessSpec{
+				RequestID: "sd-webui",
+			},
+		},
+	}
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&runtimev1alpha1.GPUUnit{}).
+		WithObjects(instance).
+		Build()
+
+	reconciler := newGPUUnitReconciler(cl, scheme)
+	reconciler.ServerlessQueueConfig.URL = "nats://nats.messaging.svc.cluster.local:4222"
+
+	_, err := reconciler.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: instance.Namespace, Name: instance.Name},
+	})
+	if err == nil {
+		t.Fatalf("expected reconcile error when cluster NATS target is missing")
+	}
+	if !strings.Contains(err.Error(), "networkPolicyTarget") {
+		t.Fatalf("expected networkPolicyTarget error, got %v", err)
 	}
 }

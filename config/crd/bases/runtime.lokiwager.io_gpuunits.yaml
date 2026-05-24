@@ -77,6 +77,23 @@ spec:
                 properties:
                   enabled:
                     type: boolean
+                  framework:
+                    description: GPUUnitServerlessFrameworkSpec defines the pod-local
+                      UDS-backed HTTP contract served by the user framework container.
+                    properties:
+                      healthPath:
+                        description: HealthPath is the local HTTP path polled over
+                          the unix domain socket before dispatch consumption starts.
+                        type: string
+                      invokePath:
+                        description: InvokePath is the local HTTP path received over
+                          the unix domain socket from the sidecar.
+                        type: string
+                      socketPath:
+                        description: SocketPath is the shared unix domain socket path
+                          used by the sidecar and framework containers.
+                        type: string
+                    type: object
                   idleTimeoutSeconds:
                     format: int32
                     minimum: 0
@@ -288,6 +305,21 @@ spec:
               readyReplicas:
                 format: int32
                 type: integer
+              serverless:
+                description: GPUUnitServerlessStatus reports the observed worker-side
+                  queue boundary for one runtime unit.
+                properties:
+                  dispatchSubject:
+                    type: string
+                  healthPath:
+                    type: string
+                  invokePath:
+                    type: string
+                  phase:
+                    type: string
+                  socketPath:
+                    type: string
+                type: object
               serviceName:
                 type: string
               ssh:

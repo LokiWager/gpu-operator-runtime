@@ -2,6 +2,8 @@ package controller
 
 import (
 	"fmt"
+	"path"
+	"strconv"
 	"strings"
 	"time"
 
@@ -14,6 +16,7 @@ import (
 	"k8s.io/utils/ptr"
 
 	runtimev1alpha1 "github.com/loki/gpu-operator-runtime/api/v1alpha1"
+	"github.com/loki/gpu-operator-runtime/pkg/serverless"
 )
 
 const (
@@ -39,14 +42,20 @@ type unitSSHSidecarParts struct {
 	Volumes        []corev1.Volume
 }
 
+type unitServerlessSidecarParts struct {
+	InitContainers []corev1.Container
+}
+
 // desiredUnitDeployment builds the single-replica workload owned by one GPUUnit.
 func desiredUnitDeployment(
 	instance runtimev1alpha1.GPUUnit,
 	storageMounts []resolvedGPUUnitStorageMount,
+	queueConfig serverless.NATSConfig,
+	workerConfig serverless.WorkerSidecarConfig,
 ) (*appsv1.Deployment, error) {
 	name := deploymentNameForUnit(instance.Name)
 	labels := unitObjectLabels(instance)
-	template, err := desiredUnitPodTemplate(instance, storageMounts)
+	template, err := desiredUnitPodTemplate(instance, storageMounts, queueConfig, workerConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -69,9 +78,11 @@ func desiredUnitDeployment(
 func desiredUnitPodTemplate(
 	instance runtimev1alpha1.GPUUnit,
 	storageMounts []resolvedGPUUnitStorageMount,
+	queueConfig serverless.NATSConfig,
+	workerConfig serverless.WorkerSidecarConfig,
 ) (corev1.PodTemplateSpec, error) {
 	labels := unitPodLabels(instance)
-	parts, err := desiredUnitPodSpecParts(instance, storageMounts)
+	parts, err := desiredUnitPodSpecParts(instance, storageMounts, queueConfig, workerConfig)
 	if err != nil {
 		return corev1.PodTemplateSpec{}, err
 	}
@@ -89,6 +100,8 @@ func desiredUnitPodTemplate(
 func desiredUnitPodSpecParts(
 	instance runtimev1alpha1.GPUUnit,
 	storageMounts []resolvedGPUUnitStorageMount,
+	queueConfig serverless.NATSConfig,
+	workerConfig serverless.WorkerSidecarConfig,
 ) (unitPodSpecParts, error) {
 	runtimeContainer, err := desiredUnitRuntimeContainer(instance, storageMounts)
 	if err != nil {
@@ -102,6 +115,14 @@ func desiredUnitPodSpecParts(
 	parts := unitPodSpecParts{
 		Containers: []corev1.Container{runtimeContainer},
 		Volumes:    append(desiredStorageVolumes(storageMounts), sharedMemoryVolume),
+	}
+	if lifecycleForUnit(instance) == runtimev1alpha1.LifecycleInstance && unitServerlessEnabled(instance.Spec.Serverless) {
+		parts.Volumes = append(parts.Volumes, desiredUnitServerlessFrameworkSocketVolume())
+		serverlessParts, err := desiredUnitServerlessSidecar(instance, queueConfig, workerConfig)
+		if err != nil {
+			return unitPodSpecParts{}, err
+		}
+		parts.InitContainers = append(parts.InitContainers, serverlessParts.InitContainers...)
 	}
 	if lifecycleForUnit(instance) != runtimev1alpha1.LifecycleInstance || !instance.Spec.SSH.Enabled {
 		return parts, nil
@@ -152,6 +173,10 @@ func desiredUnitRuntimeContainer(
 	for _, env := range instance.Spec.Template.Envs {
 		container.Env = append(container.Env, corev1.EnvVar{Name: env.Name, Value: env.Value})
 	}
+	if unitServerlessEnabled(instance.Spec.Serverless) {
+		container.Env = append(container.Env, defaultGPUUnitServerlessFrameworkEnv(instance)...)
+		container.VolumeMounts = append(container.VolumeMounts, desiredUnitServerlessFrameworkSocketVolumeMount())
+	}
 	return container, nil
 }
 
@@ -191,6 +216,21 @@ func defaultGPUUnitEnv(instance runtimev1alpha1.GPUUnit) []corev1.EnvVar {
 		{Name: runtimev1alpha1.EnvUnitName, Value: instance.Name},
 		{Name: runtimev1alpha1.EnvGPUCount, Value: fmt.Sprintf("%d", instance.Spec.GPU)},
 		{Name: runtimev1alpha1.EnvMemoryLimit, Value: instance.Spec.Memory},
+	}
+}
+
+func defaultGPUUnitServerlessFrameworkEnv(instance runtimev1alpha1.GPUUnit) []corev1.EnvVar {
+	spec, err := resolveUnitServerlessSpec(instance)
+	if err != nil {
+		return nil
+	}
+	return []corev1.EnvVar{
+		{Name: serverless.EnvServerlessRequestID, Value: spec.RequestID},
+		{Name: serverless.EnvWorkerName, Value: instance.Name},
+		{Name: serverless.EnvWorkerNamespace, Value: instance.Namespace},
+		{Name: serverless.EnvFrameworkSocketPath, Value: spec.Framework.SocketPath},
+		{Name: serverless.EnvFrameworkInvokePath, Value: spec.Framework.InvokePath},
+		{Name: serverless.EnvFrameworkHealthPath, Value: spec.Framework.HealthPath},
 	}
 }
 
@@ -273,6 +313,69 @@ func desiredStorageVolumes(storageMounts []resolvedGPUUnitStorageMount) []corev1
 		})
 	}
 	return out
+}
+
+func desiredUnitServerlessSidecar(
+	instance runtimev1alpha1.GPUUnit,
+	queueConfig serverless.NATSConfig,
+	workerConfig serverless.WorkerSidecarConfig,
+) (unitServerlessSidecarParts, error) {
+	spec, err := resolveUnitServerlessSpec(instance)
+	if err != nil {
+		return unitServerlessSidecarParts{}, err
+	}
+	if !spec.Enabled {
+		return unitServerlessSidecarParts{}, nil
+	}
+	if !queueConfig.Enabled() {
+		return unitServerlessSidecarParts{}, fmt.Errorf("serverless queue is not configured but spec.serverless is enabled")
+	}
+
+	normalizedWorkerConfig, err := workerConfig.Normalized()
+	if err != nil {
+		return unitServerlessSidecarParts{}, err
+	}
+	queueConfig, err = queueConfig.Normalized()
+	if err != nil {
+		return unitServerlessSidecarParts{}, err
+	}
+
+	container := corev1.Container{
+		Name:            runtimev1alpha1.ServerlessSidecarContainerName,
+		Image:           normalizedWorkerConfig.Image,
+		ImagePullPolicy: corev1.PullIfNotPresent,
+		SecurityContext: restrictedContainerSecurityContext(),
+		Env: []corev1.EnvVar{
+			{Name: serverless.EnvNATSURL, Value: queueConfig.URL},
+			{Name: serverless.EnvSubjectPrefix, Value: queueConfig.SubjectPrefix},
+			{Name: serverless.EnvStreamName, Value: queueConfig.StreamName},
+			{Name: serverless.EnvWorkerName, Value: instance.Name},
+			{Name: serverless.EnvWorkerNamespace, Value: instance.Namespace},
+			{Name: serverless.EnvServerlessRequestID, Value: spec.RequestID},
+			{Name: serverless.EnvWorkerConsumerName, Value: "serverless-sidecar-" + instance.Name},
+			{Name: serverless.EnvHeartbeatInterval, Value: normalizedWorkerConfig.HeartbeatInterval},
+			{Name: serverless.EnvFrameworkSocketPath, Value: spec.Framework.SocketPath},
+			{Name: serverless.EnvFrameworkInvokePath, Value: spec.Framework.InvokePath},
+			{Name: serverless.EnvFrameworkHealthPath, Value: spec.Framework.HealthPath},
+			{Name: serverless.EnvSidecarHealthPort, Value: strconv.FormatInt(int64(normalizedWorkerConfig.HealthPort), 10)},
+		},
+		VolumeMounts: []corev1.VolumeMount{
+			desiredUnitServerlessFrameworkSocketVolumeMount(),
+		},
+		StartupProbe: &corev1.Probe{
+			ProbeHandler: corev1.ProbeHandler{
+				HTTPGet: &corev1.HTTPGetAction{
+					Path: "/healthz",
+					Port: intstr.FromInt32(normalizedWorkerConfig.HealthPort),
+				},
+			},
+			PeriodSeconds:    1,
+			FailureThreshold: 30,
+		},
+	}
+	return unitServerlessSidecarParts{
+		InitContainers: []corev1.Container{asRestartableInitSidecar(container)},
+	}, nil
 }
 
 func desiredUnitSSHSidecars(
@@ -361,6 +464,22 @@ func desiredUnitSSHVolumeMounts(storageMounts []resolvedGPUUnitStorageMount) []c
 	}, desiredStorageVolumeMounts(storageMounts)...)
 }
 
+func desiredUnitServerlessFrameworkSocketVolume() corev1.Volume {
+	return corev1.Volume{
+		Name: "serverless-framework-socket",
+		VolumeSource: corev1.VolumeSource{
+			EmptyDir: &corev1.EmptyDirVolumeSource{},
+		},
+	}
+}
+
+func desiredUnitServerlessFrameworkSocketVolumeMount() corev1.VolumeMount {
+	return corev1.VolumeMount{
+		Name:      "serverless-framework-socket",
+		MountPath: runtimev1alpha1.DefaultServerlessFrameworkSocketDir,
+	}
+}
+
 func desiredUnitSSHConfigVolume() corev1.Volume {
 	return corev1.Volume{
 		Name: "ssh-config",
@@ -392,6 +511,51 @@ func desiredUnitSSHAuthorizedKeysVolume(instanceName string) corev1.Volume {
 func asRestartableInitSidecar(container corev1.Container) corev1.Container {
 	container.RestartPolicy = ptr.To(corev1.ContainerRestartPolicyAlways)
 	return container
+}
+
+func resolveUnitServerlessSpec(instance runtimev1alpha1.GPUUnit) (runtimev1alpha1.GPUUnitServerlessSpec, error) {
+	spec := instance.Spec.Serverless
+	if !spec.Enabled && strings.TrimSpace(spec.RequestID) == "" {
+		return runtimev1alpha1.GPUUnitServerlessSpec{}, nil
+	}
+
+	requestID, err := serverless.NormalizeRequestID(spec.RequestID)
+	if err != nil {
+		return runtimev1alpha1.GPUUnitServerlessSpec{}, fmt.Errorf("%w: %s", errUnitServerlessSpecIncomplete, err.Error())
+	}
+	spec.Enabled = true
+	spec.RequestID = requestID
+	if spec.MinAvailableCount < 0 {
+		return runtimev1alpha1.GPUUnitServerlessSpec{}, fmt.Errorf("%w: serverless.minAvailableCount should be >= 0", errUnitServerlessSpecIncomplete)
+	}
+	if spec.IdleTimeoutSeconds < 0 {
+		return runtimev1alpha1.GPUUnitServerlessSpec{}, fmt.Errorf("%w: serverless.idleTimeoutSeconds should be >= 0", errUnitServerlessSpecIncomplete)
+	}
+	if spec.MinRequestCount < 0 {
+		return runtimev1alpha1.GPUUnitServerlessSpec{}, fmt.Errorf("%w: serverless.minRequestCount should be >= 0", errUnitServerlessSpecIncomplete)
+	}
+	if spec.IdleTimeoutSeconds == 0 {
+		spec.IdleTimeoutSeconds = 300
+	}
+	spec.Framework.SocketPath = normalizeControllerServerlessSocketPath(spec.Framework.SocketPath, runtimev1alpha1.DefaultServerlessFrameworkSocketPath)
+	socketDir := path.Clean(runtimev1alpha1.DefaultServerlessFrameworkSocketDir)
+	if spec.Framework.SocketPath == socketDir || !strings.HasPrefix(spec.Framework.SocketPath, socketDir+"/") {
+		return runtimev1alpha1.GPUUnitServerlessSpec{}, fmt.Errorf("%w: serverless.framework.socketPath %q must stay under %s", errUnitServerlessSpecIncomplete, spec.Framework.SocketPath, runtimev1alpha1.DefaultServerlessFrameworkSocketDir)
+	}
+	spec.Framework.InvokePath = normalizeControllerServerlessPath(spec.Framework.InvokePath, runtimev1alpha1.DefaultServerlessFrameworkInvokePath)
+	spec.Framework.HealthPath = normalizeControllerServerlessPath(spec.Framework.HealthPath, runtimev1alpha1.DefaultServerlessFrameworkHealthPath)
+	return spec, nil
+}
+
+func normalizeControllerServerlessSocketPath(value, fallback string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return fallback
+	}
+	if !strings.HasPrefix(trimmed, "/") {
+		trimmed = "/" + trimmed
+	}
+	return path.Clean(trimmed)
 }
 
 func resolveUnitSSHSpec(instance runtimev1alpha1.GPUUnit) (runtimev1alpha1.GPUUnitSSHSpec, error) {
@@ -486,6 +650,18 @@ func resolveUnitSSHSpec(instance runtimev1alpha1.GPUUnit) (runtimev1alpha1.GPUUn
 		Image:          image,
 		FRPImage:       frpImage,
 	}, nil
+}
+
+func normalizeControllerServerlessPath(value, fallback string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return fallback
+	}
+	normalized := "/" + strings.TrimPrefix(trimmed, "/")
+	if normalized == "/" {
+		return fallback
+	}
+	return normalized
 }
 
 func desiredUnitSSHFRPConfig(instance runtimev1alpha1.GPUUnit, sshSpec runtimev1alpha1.GPUUnitSSHSpec) string {
@@ -604,6 +780,17 @@ func lifecycleForUnit(instance runtimev1alpha1.GPUUnit) string {
 		return runtimev1alpha1.LifecycleStock
 	}
 	return runtimev1alpha1.LifecycleInstance
+}
+
+func unitServerlessEnabled(spec runtimev1alpha1.GPUUnitServerlessSpec) bool {
+	return spec.Enabled ||
+		strings.TrimSpace(spec.RequestID) != "" ||
+		spec.MinAvailableCount > 0 ||
+		spec.IdleTimeoutSeconds > 0 ||
+		spec.MinRequestCount > 0 ||
+		strings.TrimSpace(spec.Framework.SocketPath) != "" ||
+		strings.TrimSpace(spec.Framework.InvokePath) != "" ||
+		strings.TrimSpace(spec.Framework.HealthPath) != ""
 }
 
 // unitObjectLabels returns the shared label set applied to owned objects.

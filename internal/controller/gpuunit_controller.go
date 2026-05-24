@@ -25,19 +25,23 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	runtimev1alpha1 "github.com/loki/gpu-operator-runtime/api/v1alpha1"
+	"github.com/loki/gpu-operator-runtime/pkg/serverless"
 )
 
 // GPUUnitReconciler reconciles a GPUUnit object.
 type GPUUnitReconciler struct {
 	client.Client
-	Scheme             *runtime.Scheme
-	BlockedEgressCIDRs []string
+	Scheme                *runtime.Scheme
+	BlockedEgressCIDRs    []string
+	ServerlessQueueConfig serverless.NATSConfig
+	ServerlessWorker      serverless.WorkerSidecarConfig
 }
 
 const gpuUnitControllerName = "gpuunit"
 
 var errStatusOnly = errors.New(statusOnlyMessage)
 var errUnitSSHSpecIncomplete = errors.New("ssh access is enabled but spec.ssh is incomplete")
+var errUnitServerlessSpecIncomplete = errors.New("serverless access is enabled but spec.serverless is incomplete")
 
 // +kubebuilder:rbac:groups=runtime.lokiwager.io,resources=gpuunits,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=runtime.lokiwager.io,resources=gpuunits/status,verbs=get;update;patch
@@ -66,10 +70,13 @@ func (r *GPUUnitReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, nil
 	}
 
-	if _, err := desiredUnitPodTemplate(instance, storageMounts); err != nil {
+	if _, err := desiredUnitPodTemplate(instance, storageMounts, r.ServerlessQueueConfig, r.ServerlessWorker); err != nil {
 		reason := runtimev1alpha1.ReasonInvalidSpec
 		if errors.Is(err, errUnitSSHSpecIncomplete) {
 			reason = runtimev1alpha1.ReasonSSHConfigInvalid
+		}
+		if errors.Is(err, errUnitServerlessSpecIncomplete) {
+			reason = runtimev1alpha1.ReasonServerlessConfigInvalid
 		}
 		if updateErr := r.markUnitFailed(ctx, &instance, "", "", reason, err.Error()); updateErr != nil {
 			return ctrl.Result{}, updateErr
@@ -135,7 +142,7 @@ func (r *GPUUnitReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, err
 	}
 
-	podFailureMessage, sshFailureMessage, err := r.inspectGPUUnitPods(ctx, &instance)
+	podFailureMessage, sshFailureMessage, serverlessFailureMessage, err := r.inspectGPUUnitPods(ctx, &instance)
 	if err != nil {
 		if updateErr := r.markUnitFailed(ctx, &instance, serviceName, accessURL, runtimev1alpha1.ReasonPodStatusSyncFailed, err.Error()); updateErr != nil {
 			return ctrl.Result{}, updateErr
@@ -144,6 +151,7 @@ func (r *GPUUnitReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 
 	sshProgress := buildUnitSSHProgress(instance, dep.Status.AvailableReplicas, sshFailureMessage)
+	serverlessProgress := buildUnitServerlessProgress(instance, dep.Status.AvailableReplicas, r.ServerlessQueueConfig.SubjectPrefix, serverlessFailureMessage)
 	next := buildGPUUnitStatus(
 		instance,
 		dep.Status.AvailableReplicas,
@@ -153,6 +161,7 @@ func (r *GPUUnitReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		storageReady,
 		storageWaitMessage,
 		sshProgress,
+		serverlessProgress,
 	)
 	if err := r.updateGPUUnitStatus(ctx, &instance, next); err != nil {
 		return ctrl.Result{}, err
@@ -189,11 +198,14 @@ func (r *GPUUnitReconciler) reconcileGPUUnitDeployment(ctx context.Context, inst
 			return nil, false, err
 		}
 
-		newDep, err := desiredUnitDeployment(*instance, storageMounts)
+		newDep, err := desiredUnitDeployment(*instance, storageMounts, r.ServerlessQueueConfig, r.ServerlessWorker)
 		if err != nil {
 			reason := runtimev1alpha1.ReasonInvalidSpec
 			if errors.Is(err, errUnitSSHSpecIncomplete) {
 				reason = runtimev1alpha1.ReasonSSHConfigInvalid
+			}
+			if errors.Is(err, errUnitServerlessSpecIncomplete) {
+				reason = runtimev1alpha1.ReasonServerlessConfigInvalid
 			}
 			if markErr := r.markUnitFailed(ctx, instance, instance.Status.ServiceName, instance.Status.AccessURL, reason, err.Error()); markErr != nil {
 				return nil, false, markErr
@@ -209,11 +221,14 @@ func (r *GPUUnitReconciler) reconcileGPUUnitDeployment(ctx context.Context, inst
 		return newDep, true, nil
 	}
 
-	expectedTemplate, err := desiredUnitPodTemplate(*instance, storageMounts)
+	expectedTemplate, err := desiredUnitPodTemplate(*instance, storageMounts, r.ServerlessQueueConfig, r.ServerlessWorker)
 	if err != nil {
 		reason := runtimev1alpha1.ReasonInvalidSpec
 		if errors.Is(err, errUnitSSHSpecIncomplete) {
 			reason = runtimev1alpha1.ReasonSSHConfigInvalid
+		}
+		if errors.Is(err, errUnitServerlessSpecIncomplete) {
+			reason = runtimev1alpha1.ReasonServerlessConfigInvalid
 		}
 		if markErr := r.markUnitFailed(ctx, instance, instance.Status.ServiceName, instance.Status.AccessURL, reason, err.Error()); markErr != nil {
 			return nil, false, markErr
@@ -319,6 +334,14 @@ func (r *GPUUnitReconciler) markUnitFailed(ctx context.Context, instance *runtim
 		next.SSH = gpuUnitSSHStatusFromProgress(sshProgress)
 		apimeta.SetStatusCondition(&next.Conditions, buildUnitSSHCondition(instance.Generation, sshProgress))
 	}
+	if lifecycleForUnit(*instance) != runtimev1alpha1.LifecycleStock && unitServerlessEnabled(instance.Spec.Serverless) {
+		serverlessProgress := buildUnitServerlessProgress(*instance, 0, r.ServerlessQueueConfig.SubjectPrefix, "")
+		serverlessProgress.Phase = runtimev1alpha1.UnitServerlessPhaseFailed
+		serverlessProgress.Reason = firstNonEmpty(reason, runtimev1alpha1.ReasonUnitServerlessFailed)
+		serverlessProgress.Message = firstNonEmpty(message, runtimev1alpha1.StatusMessageUnitServerlessPending)
+		next.Serverless = gpuUnitServerlessStatusFromProgress(serverlessProgress)
+		apimeta.SetStatusCondition(&next.Conditions, buildUnitServerlessCondition(instance.Generation, serverlessProgress))
+	}
 	apimeta.SetStatusCondition(&next.Conditions, statusConditionFromDecision(runtimev1alpha1.ConditionReady, instance.Generation, conditionDecision{
 		Status:  metav1.ConditionFalse,
 		Reason:  reason,
@@ -353,7 +376,7 @@ func normalizeGPUUnitStatusForCompare(status runtimev1alpha1.GPUUnitStatus) runt
 }
 
 // inspectGPUUnitPods scans owned pods for the first meaningful workload and SSH failures.
-func (r *GPUUnitReconciler) inspectGPUUnitPods(ctx context.Context, instance *runtimev1alpha1.GPUUnit) (string, string, error) {
+func (r *GPUUnitReconciler) inspectGPUUnitPods(ctx context.Context, instance *runtimev1alpha1.GPUUnit) (string, string, string, error) {
 	var pods corev1.PodList
 	if err := r.List(
 		ctx,
@@ -361,7 +384,7 @@ func (r *GPUUnitReconciler) inspectGPUUnitPods(ctx context.Context, instance *ru
 		client.InNamespace(instance.Namespace),
 		client.MatchingLabels{runtimev1alpha1.LabelUnitKey: instance.Name},
 	); err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	for i := range pods.Items {
 		if message, ok := podFailureMessage(pods.Items[i]); ok {
@@ -370,17 +393,27 @@ func (r *GPUUnitReconciler) inspectGPUUnitPods(ctx context.Context, instance *ru
 				runtimev1alpha1.UnitSSHContainerName,
 				runtimev1alpha1.UnitSSHFRPContainerName,
 			)
-			return message, sshMessage, nil
+			serverlessMessage, _ := namedContainerFailureMessage(
+				pods.Items[i],
+				runtimev1alpha1.ServerlessSidecarContainerName,
+			)
+			return message, sshMessage, serverlessMessage, nil
 		}
 		if sshMessage, ok := namedContainerFailureMessage(
 			pods.Items[i],
 			runtimev1alpha1.UnitSSHContainerName,
 			runtimev1alpha1.UnitSSHFRPContainerName,
 		); ok {
-			return "", sshMessage, nil
+			return "", sshMessage, "", nil
+		}
+		if serverlessMessage, ok := namedContainerFailureMessage(
+			pods.Items[i],
+			runtimev1alpha1.ServerlessSidecarContainerName,
+		); ok {
+			return "", "", serverlessMessage, nil
 		}
 	}
-	return "", "", nil
+	return "", "", "", nil
 }
 
 // resolveGPUUnitStorageMounts loads referenced storage objects and reports whether they are ready.

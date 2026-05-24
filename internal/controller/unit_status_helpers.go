@@ -7,6 +7,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	runtimev1alpha1 "github.com/loki/gpu-operator-runtime/api/v1alpha1"
+	"github.com/loki/gpu-operator-runtime/pkg/serverless"
 )
 
 type unitSSHProgress struct {
@@ -19,6 +20,17 @@ type unitSSHProgress struct {
 	Reason        string
 	Message       string
 	Ready         bool
+}
+
+type unitServerlessProgress struct {
+	Phase           string
+	DispatchSubject string
+	SocketPath      string
+	InvokePath      string
+	HealthPath      string
+	Reason          string
+	Message         string
+	Ready           bool
 }
 
 type unitReadyStatusInput struct {
@@ -136,6 +148,28 @@ var unitSSHConditionByPhase = map[string]conditionDecision{
 	},
 }
 
+var unitServerlessConditionByPhase = map[string]conditionDecision{
+	runtimev1alpha1.UnitServerlessPhaseDisabled: {
+		Status:  metav1.ConditionTrue,
+		Reason:  runtimev1alpha1.ReasonUnitServerlessReady,
+		Message: runtimev1alpha1.StatusMessageUnitServerlessDisabled,
+	},
+	runtimev1alpha1.UnitServerlessPhasePending: {
+		Status:  metav1.ConditionFalse,
+		Reason:  runtimev1alpha1.ReasonUnitServerlessPending,
+		Message: runtimev1alpha1.StatusMessageUnitServerlessPending,
+	},
+	runtimev1alpha1.UnitServerlessPhaseReady: {
+		Status:  metav1.ConditionTrue,
+		Reason:  runtimev1alpha1.ReasonUnitServerlessReady,
+		Message: runtimev1alpha1.StatusMessageUnitServerlessReady,
+	},
+	runtimev1alpha1.UnitServerlessPhaseFailed: {
+		Status: metav1.ConditionFalse,
+		Reason: runtimev1alpha1.ReasonUnitServerlessFailed,
+	},
+}
+
 func buildUnitSSHProgress(
 	instance runtimev1alpha1.GPUUnit,
 	available int32,
@@ -184,6 +218,54 @@ func buildUnitSSHProgress(
 	return progress
 }
 
+func buildUnitServerlessProgress(
+	instance runtimev1alpha1.GPUUnit,
+	available int32,
+	subjectPrefix string,
+	sidecarFailure string,
+) unitServerlessProgress {
+	if !unitServerlessEnabled(instance.Spec.Serverless) {
+		return unitServerlessProgress{
+			Phase:   runtimev1alpha1.UnitServerlessPhaseDisabled,
+			Reason:  runtimev1alpha1.ReasonUnitServerlessReady,
+			Message: runtimev1alpha1.StatusMessageUnitServerlessDisabled,
+			Ready:   true,
+		}
+	}
+
+	spec, err := resolveUnitServerlessSpec(instance)
+	if err != nil {
+		return unitServerlessProgress{
+			Phase:   runtimev1alpha1.UnitServerlessPhaseFailed,
+			Reason:  runtimev1alpha1.ReasonServerlessConfigInvalid,
+			Message: err.Error(),
+		}
+	}
+
+	progress := unitServerlessProgress{
+		Phase:           runtimev1alpha1.UnitServerlessPhasePending,
+		DispatchSubject: serverless.DispatchSubject(subjectPrefix, spec.RequestID, instance.Name),
+		SocketPath:      spec.Framework.SocketPath,
+		InvokePath:      spec.Framework.InvokePath,
+		HealthPath:      spec.Framework.HealthPath,
+		Reason:          runtimev1alpha1.ReasonUnitServerlessPending,
+		Message:         runtimev1alpha1.StatusMessageUnitServerlessPending,
+	}
+	if sidecarFailure != "" {
+		progress.Phase = runtimev1alpha1.UnitServerlessPhaseFailed
+		progress.Reason = runtimev1alpha1.ReasonUnitServerlessFailed
+		progress.Message = sidecarFailure
+		return progress
+	}
+	if available >= 1 {
+		progress.Phase = runtimev1alpha1.UnitServerlessPhaseReady
+		progress.Reason = runtimev1alpha1.ReasonUnitServerlessReady
+		progress.Message = runtimev1alpha1.StatusMessageUnitServerlessReady
+		progress.Ready = true
+	}
+	return progress
+}
+
 func buildGPUUnitStatus(
 	instance runtimev1alpha1.GPUUnit,
 	available int32,
@@ -193,6 +275,7 @@ func buildGPUUnitStatus(
 	storageReady bool,
 	storageWaitMessage string,
 	sshProgress unitSSHProgress,
+	serverlessProgress unitServerlessProgress,
 ) runtimev1alpha1.GPUUnitStatus {
 	next := runtimev1alpha1.GPUUnitStatus{
 		ReadyReplicas:      available,
@@ -201,6 +284,7 @@ func buildGPUUnitStatus(
 		ServiceName:        serviceName,
 		AccessURL:          accessURL,
 		SSH:                gpuUnitSSHStatusFromProgress(sshProgress),
+		Serverless:         gpuUnitServerlessStatusFromProgress(serverlessProgress),
 	}
 
 	input := unitReadyStatusInput{
@@ -212,12 +296,14 @@ func buildGPUUnitStatus(
 	decision := resolveUnitReadyStatus(instance, input)
 	apimeta.SetStatusCondition(&next.Conditions, statusConditionFromDecision(runtimev1alpha1.ConditionReady, instance.Generation, decision.Ready))
 	apimeta.SetStatusCondition(&next.Conditions, buildUnitSSHCondition(instance.Generation, sshProgress))
+	apimeta.SetStatusCondition(&next.Conditions, buildUnitServerlessCondition(instance.Generation, serverlessProgress))
 	next.Phase = decision.Phase
 
 	if lifecycleForUnit(instance) == runtimev1alpha1.LifecycleStock {
 		next.ServiceName = ""
 		next.AccessURL = ""
 		next.SSH = runtimev1alpha1.GPUUnitSSHStatus{}
+		next.Serverless = runtimev1alpha1.GPUUnitServerlessStatus{}
 	}
 	return next
 }
@@ -270,4 +356,24 @@ func buildUnitSSHCondition(generation int64, progress unitSSHProgress) metav1.Co
 	decision.Reason = firstNonEmpty(progress.Reason, decision.Reason)
 	decision.Message = firstNonEmpty(progress.Message, decision.Message)
 	return statusConditionFromDecision(runtimev1alpha1.ConditionSSHReady, generation, decision)
+}
+
+func gpuUnitServerlessStatusFromProgress(progress unitServerlessProgress) runtimev1alpha1.GPUUnitServerlessStatus {
+	return runtimev1alpha1.GPUUnitServerlessStatus{
+		Phase:           progress.Phase,
+		DispatchSubject: progress.DispatchSubject,
+		SocketPath:      progress.SocketPath,
+		InvokePath:      progress.InvokePath,
+		HealthPath:      progress.HealthPath,
+	}
+}
+
+func buildUnitServerlessCondition(generation int64, progress unitServerlessProgress) metav1.Condition {
+	decision, ok := unitServerlessConditionByPhase[progress.Phase]
+	if !ok {
+		decision = unitServerlessConditionByPhase[runtimev1alpha1.UnitServerlessPhasePending]
+	}
+	decision.Reason = firstNonEmpty(progress.Reason, decision.Reason)
+	decision.Message = firstNonEmpty(progress.Message, decision.Message)
+	return statusConditionFromDecision(runtimev1alpha1.ConditionServerlessReady, generation, decision)
 }

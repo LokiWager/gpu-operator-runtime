@@ -20,3 +20,13 @@ serverless:
   streamMaxAge: "72h"
   connectTimeout: "5s"
   duplicatesWindow: "24h"
+  # For in-cluster NATS, keep url pointed at the Service DNS name and
+  # configure networkPolicyTarget so worker Pods may reach only the NATS Pods.
+  # networkPolicyTarget:
+  #   namespace: "messaging"
+  #   podLabels:
+  #     app.kubernetes.io/name: "nats"
+serverlessWorker:
+  image: "ghcr.io/lokiwager/gpu-runtime-serverless-sidecar:latest"
+  healthPort: 8091
+  heartbeatInterval: "15s"

@@ -2,6 +2,8 @@ package contract
 
 import (
 	"encoding/json"
+	"fmt"
+	"path"
 	"strings"
 
 	runtimev1alpha1 "github.com/loki/gpu-operator-runtime/api/v1alpha1"
@@ -107,5 +109,48 @@ func NormalizeGPUUnitServerless(spec runtimev1alpha1.GPUUnitServerlessSpec) (run
 		spec.IdleTimeoutSeconds = 300
 	}
 
+	framework, err := NormalizeGPUUnitServerlessFramework(spec.Framework)
+	if err != nil {
+		return runtimev1alpha1.GPUUnitServerlessSpec{}, err
+	}
+	spec.Framework = framework
+
 	return spec, nil
+}
+
+// NormalizeGPUUnitServerlessFramework validates and defaults the pod-local unix socket contract exposed by the user framework.
+func NormalizeGPUUnitServerlessFramework(spec runtimev1alpha1.GPUUnitServerlessFrameworkSpec) (runtimev1alpha1.GPUUnitServerlessFrameworkSpec, error) {
+	spec.SocketPath = normalizeServerlessFrameworkSocketPath(spec.SocketPath, runtimev1alpha1.DefaultServerlessFrameworkSocketPath)
+	socketDir := path.Clean(runtimev1alpha1.DefaultServerlessFrameworkSocketDir)
+	if spec.SocketPath == socketDir || !strings.HasPrefix(spec.SocketPath, socketDir+"/") {
+		return runtimev1alpha1.GPUUnitServerlessFrameworkSpec{}, &ValidationError{
+			Message: fmt.Sprintf("serverless.framework.socketPath %q must stay under %s", spec.SocketPath, runtimev1alpha1.DefaultServerlessFrameworkSocketDir),
+		}
+	}
+	spec.InvokePath = normalizeServerlessFrameworkPath(spec.InvokePath, runtimev1alpha1.DefaultServerlessFrameworkInvokePath)
+	spec.HealthPath = normalizeServerlessFrameworkPath(spec.HealthPath, runtimev1alpha1.DefaultServerlessFrameworkHealthPath)
+	return spec, nil
+}
+
+func normalizeServerlessFrameworkSocketPath(value, fallback string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return fallback
+	}
+	if !strings.HasPrefix(trimmed, "/") {
+		trimmed = "/" + trimmed
+	}
+	return path.Clean(trimmed)
+}
+
+func normalizeServerlessFrameworkPath(value, fallback string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return fallback
+	}
+	normalized := "/" + strings.TrimPrefix(trimmed, "/")
+	if normalized == "/" {
+		return fallback
+	}
+	return path.Clean(normalized)
 }

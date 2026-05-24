@@ -95,4 +95,13 @@ func TestNormalizeCreateGPUUnitRequest_NormalizesServerless(t *testing.T) {
 	if req.Serverless.IdleTimeoutSeconds != 300 {
 		t.Fatalf("expected default idle timeout 300, got %d", req.Serverless.IdleTimeoutSeconds)
 	}
+	if req.Serverless.Framework.SocketPath != runtimev1alpha1.DefaultServerlessFrameworkSocketPath {
+		t.Fatalf("expected default framework socket path %s, got %s", runtimev1alpha1.DefaultServerlessFrameworkSocketPath, req.Serverless.Framework.SocketPath)
+	}
+	if req.Serverless.Framework.InvokePath != runtimev1alpha1.DefaultServerlessFrameworkInvokePath {
+		t.Fatalf("expected default framework invoke path %s, got %s", runtimev1alpha1.DefaultServerlessFrameworkInvokePath, req.Serverless.Framework.InvokePath)
+	}
+	if req.Serverless.Framework.HealthPath != runtimev1alpha1.DefaultServerlessFrameworkHealthPath {
+		t.Fatalf("expected default framework health path %s, got %s", runtimev1alpha1.DefaultServerlessFrameworkHealthPath, req.Serverless.Framework.HealthPath)
+	}
 }

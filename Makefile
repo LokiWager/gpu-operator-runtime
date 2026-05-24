@@ -1,6 +1,9 @@
 APP_NAME := manager
+ACTIVATOR_APP_NAME := activator
 PROXY_APP_NAME := runtime-proxy
 IMAGE_ACCELERATOR_APP_NAME := image-accelerator
+SERVERLESS_SIDECAR_APP_NAME := serverless-sidecar
+FRAMEWORK_ECHO_APP_NAME := framework-echo
 export GOTOOLCHAIN := go1.26.0
 
 GOFILES := $(shell find . -type f -name '*.go' -not -path './vendor/*')
@@ -18,8 +21,11 @@ run:
 build:
 	mkdir -p bin
 	go build -o bin/$(APP_NAME) ./cmd/main.go
+	go build -o bin/$(ACTIVATOR_APP_NAME) ./cmd/activator
 	go build -o bin/$(PROXY_APP_NAME) ./cmd/runtime-proxy
 	go build -o bin/$(IMAGE_ACCELERATOR_APP_NAME) ./cmd/image-accelerator
+	go build -o bin/$(SERVERLESS_SIDECAR_APP_NAME) ./cmd/serverless-sidecar
+	go build -o bin/$(FRAMEWORK_ECHO_APP_NAME) ./cmd/framework-echo
 
 test:
 	go test ./...

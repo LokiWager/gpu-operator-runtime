@@ -196,6 +196,8 @@ definitions:
         type: string
       serverless:
         $ref: '#/definitions/v1alpha1.GPUUnitServerlessSpec'
+      serverlessStatus:
+        $ref: '#/definitions/v1alpha1.GPUUnitServerlessStatus'
       serviceName:
         type: string
       sourceStockName:
@@ -501,10 +503,27 @@ definitions:
       username:
         type: string
     type: object
+  v1alpha1.GPUUnitServerlessFrameworkSpec:
+    properties:
+      healthPath:
+        description: HealthPath is the local HTTP path polled over the unix domain
+          socket before dispatch consumption starts.
+        type: string
+      invokePath:
+        description: InvokePath is the local HTTP path received over the unix domain
+          socket from the sidecar.
+        type: string
+      socketPath:
+        description: SocketPath is the shared unix domain socket path used by the
+          sidecar and framework containers.
+        type: string
+    type: object
   v1alpha1.GPUUnitServerlessSpec:
     properties:
       enabled:
         type: boolean
+      framework:
+        $ref: '#/definitions/v1alpha1.GPUUnitServerlessFrameworkSpec'
       idleTimeoutSeconds:
         description: +kubebuilder:validation:Minimum=0
         type: integer
@@ -517,6 +536,19 @@ definitions:
       requestID:
         description: RequestID is the control-plane generated serverless request identifier
           shared by queued invocations and worker pools.
+        type: string
+    type: object
+  v1alpha1.GPUUnitServerlessStatus:
+    properties:
+      dispatchSubject:
+        type: string
+      healthPath:
+        type: string
+      invokePath:
+        type: string
+      phase:
+        type: string
+      socketPath:
         type: string
     type: object
   v1alpha1.GPUUnitStorageMount:

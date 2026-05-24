@@ -2,20 +2,21 @@
 
 Teaching-oriented Golang + Kubernetes project for building a GPU runtime control plane.
 
-The current chapter adds a dedicated serverless activator and worker-dispatch contract on top of the queue-first ingress path:
+The current chapter adds the worker-side half of the serverless execution boundary:
 
 - `GPUUnit` still records a `serverless` policy block owned by the control plane
 - the control plane-generated `requestID` still lives on the unit spec instead of being invented by the runtime
 - the manager can optionally connect to NATS JetStream for durable queue-first invocation ingress
 - `/api/v1/serverless/invocations` still persists invocation envelopes before any worker executes them
-- a new standalone `activator` process now consumes queued invocations, registers ready workers in memory, and publishes worker-targeted dispatch messages
-- when no ready worker exists, the activator can create another `GPUUnit` worker by cloning an existing serverless worker template and consuming new stock
-- the worker sidecar is the only component that should consume worker dispatch subjects and publish results or metrics back to NATS
-- the user-facing worker framework only talks to the local sidecar over an internal protocol such as UDS or localhost HTTPS; it should not hold NATS credentials directly
-- `mode: "sync"` and `mode: "async"` still share one ingress contract, with `sync` waiting on an invocation-specific reply path once the worker-side framework loop is present
+- the standalone `activator` process still consumes queued invocations, registers ready workers in memory, and publishes worker-targeted dispatch messages
+- a new `serverless-sidecar` command now consumes those worker-targeted dispatch subjects from inside the worker Pod
+- the user-facing framework now has a concrete unix domain socket contract that the sidecar calls
+- a small Go helper package under `pkg/framework` turns that contract into one reusable HTTP handler for framework-based images
+- the sidecar is the only component that touches NATS credentials and subject names; the framework never gets raw queue access
+- `mode: "sync"` and `mode: "async"` now share the same worker loop, with `sync` receiving an invocation-specific reply in addition to the durable result subject
 - the standalone `image-accelerator` tool from Part 12 remains the cold-start preparation step for later worker lifecycle work
 
-The operator API still seeds stock units into `runtime-stock`, and the runtime API still consumes ready stock into active `GPUUnit` objects in `runtime-instance`. This chapter connects that runtime layer to a dedicated activator so queued invocations can be turned into worker dispatch messages without bypassing the durable ingress boundary.
+The operator API still seeds stock units into `runtime-stock`, and the runtime API still consumes ready stock into active `GPUUnit` objects in `runtime-instance`. This chapter finishes the worker Pod boundary so activator dispatch messages can now be consumed by a trusted sidecar instead of being handed directly to user code.
 
 ## Prerequisites
 
@@ -89,7 +90,7 @@ Run the shared storage proxy in a second terminal:
 GOTOOLCHAIN=go1.26.0 go run ./cmd/runtime-proxy --http-addr :8090
 ```
 
-If you want to exercise the new queue-first serverless ingress locally, start a JetStream-enabled NATS in a third terminal:
+If you want to exercise the new queue-first serverless flow locally, start a JetStream-enabled NATS in a third terminal:
 
 ```bash
 nats-server -js
@@ -99,6 +100,28 @@ Then start the dedicated activator in a fourth terminal:
 
 ```bash
 GOTOOLCHAIN=go1.26.0 go run ./cmd/activator --config config/local/activator.yaml
+```
+
+Start a minimal example framework in a fifth terminal:
+
+```bash
+SERVERLESS_FRAMEWORK_SOCKET_PATH=/tmp/serverless-framework/framework.sock \
+GOTOOLCHAIN=go1.26.0 go run ./cmd/framework-echo
+```
+
+Then start the worker sidecar loop in a sixth terminal:
+
+```bash
+SERVERLESS_NATS_URL=nats://127.0.0.1:4222 \
+SERVERLESS_SUBJECT_PREFIX=runtime.serverless \
+SERVERLESS_STREAM_NAME=RUNTIME_SERVERLESS \
+SERVERLESS_WORKER_NAME=sd-webui-template \
+SERVERLESS_WORKER_NAMESPACE=runtime-instance \
+SERVERLESS_REQUEST_ID=sd-webui \
+SERVERLESS_FRAMEWORK_SOCKET_PATH=/tmp/serverless-framework/framework.sock \
+SERVERLESS_FRAMEWORK_INVOKE_PATH=/invoke \
+SERVERLESS_FRAMEWORK_HEALTH_PATH=/healthz \
+GOTOOLCHAIN=go1.26.0 go run ./cmd/serverless-sidecar
 ```
 
 Useful flags:
@@ -120,6 +143,25 @@ serverless:
   connectTimeout: "5s"
   duplicatesWindow: "24h"
 ```
+
+For local development, `127.0.0.1` is fine. For in-cluster deployment, point `url` at the
+NATS Service DNS name and configure a `networkPolicyTarget` so runtime Pods may reach only
+the NATS Pods instead of opening broad internal egress:
+
+```yaml
+serverless:
+  url: "nats://nats.messaging.svc.cluster.local:4222"
+  subjectPrefix: "runtime.serverless"
+  streamName: "RUNTIME_SERVERLESS"
+  networkPolicyTarget:
+    namespace: "messaging"
+    podLabels:
+      app.kubernetes.io/name: "nats"
+```
+
+If `serverless.url` points to a Kubernetes `*.svc` hostname and `networkPolicyTarget` is
+missing, the runtime controller now treats that as a configuration error instead of silently
+creating a Pod that cannot reach NATS.
 
 The dedicated activator has its own local YAML config:
 
@@ -145,7 +187,7 @@ curl -X POST http://127.0.0.1:8080/api/v1/serverless/invocations \
   }'
 ```
 
-At this stage, the manager and activator cover ingress queueing and worker-targeted dispatch publication. The next worker-side chapter will add the sidecar and framework loop that consumes those dispatch subjects and publishes results, metrics, and sync replies.
+At this stage, the manager, activator, worker sidecar, and local framework contract cover the full execution handoff from ingress queue to worker-local invocation. The next chapter will focus on worker lifecycle policy: prewarm, idle scale-down, and durable async result handling.
 
 Build the standalone userspace image acceleration tool:
 

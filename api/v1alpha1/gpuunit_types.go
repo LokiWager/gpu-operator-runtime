@@ -20,6 +20,11 @@ const (
 	UnitSSHPhaseReady    = "Ready"
 	UnitSSHPhaseFailed   = "Failed"
 
+	UnitServerlessPhaseDisabled = "Disabled"
+	UnitServerlessPhasePending  = "Pending"
+	UnitServerlessPhaseReady    = "Ready"
+	UnitServerlessPhaseFailed   = "Failed"
+
 	ConditionReady = "Ready"
 
 	LifecycleStock    = "stock"
@@ -30,6 +35,7 @@ const (
 	ReasonPodStatusSyncFailed         = "PodStatusSyncFailed"
 	ReasonAccessConfigInvalid         = "AccessConfigInvalid"
 	ReasonSSHConfigInvalid            = "SSHConfigInvalid"
+	ReasonServerlessConfigInvalid     = "ServerlessConfigInvalid"
 	ReasonStockNotReady               = "StockNotReady"
 	ReasonStockReady                  = "StockReady"
 	ReasonUnitProgressing             = "UnitProgressing"
@@ -37,6 +43,9 @@ const (
 	ReasonUnitSSHPending              = "UnitSSHPending"
 	ReasonUnitSSHReady                = "UnitSSHReady"
 	ReasonUnitSSHFailed               = "UnitSSHFailed"
+	ReasonUnitServerlessPending       = "UnitServerlessPending"
+	ReasonUnitServerlessReady         = "UnitServerlessReady"
+	ReasonUnitServerlessFailed        = "UnitServerlessFailed"
 	ReasonUnitServiceSyncFailed       = "UnitServiceSyncFailed"
 	ReasonUnitNetworkPolicySyncFailed = "UnitNetworkPolicySyncFailed"
 	ReasonUnitDeploymentSyncFailed    = "UnitDeploymentSyncFailed"
@@ -58,15 +67,18 @@ const (
 	EnvGPUCount    = "GPU_COUNT"
 	EnvMemoryLimit = "MEMORY_LIMIT"
 
-	DefaultAccessScheme          = "http"
-	StatusMessageUnitReady       = "GPU unit runtime is ready."
-	StatusMessageUnitWait        = "Waiting for the GPU unit runtime to become ready."
-	StatusMessageUnitStorage     = "Waiting for attached storage to become ready."
-	StatusMessageUnitSSHReady    = "GPU unit SSH access is ready."
-	StatusMessageUnitSSHPending  = "Waiting for the GPU unit SSH access to become ready."
-	StatusMessageUnitSSHDisabled = "GPU unit SSH access is disabled."
-	StatusMessageStockReady      = "Stock unit is ready to be consumed."
-	StatusMessageStockWait       = "Waiting for the stock unit runtime to become ready."
+	DefaultAccessScheme                 = "http"
+	StatusMessageUnitReady              = "GPU unit runtime is ready."
+	StatusMessageUnitWait               = "Waiting for the GPU unit runtime to become ready."
+	StatusMessageUnitStorage            = "Waiting for attached storage to become ready."
+	StatusMessageUnitSSHReady           = "GPU unit SSH access is ready."
+	StatusMessageUnitSSHPending         = "Waiting for the GPU unit SSH access to become ready."
+	StatusMessageUnitSSHDisabled        = "GPU unit SSH access is disabled."
+	StatusMessageUnitServerlessReady    = "GPU unit serverless sidecar is ready."
+	StatusMessageUnitServerlessPending  = "Waiting for the GPU unit serverless sidecar to become ready."
+	StatusMessageUnitServerlessDisabled = "GPU unit serverless sidecar is disabled."
+	StatusMessageStockReady             = "Stock unit is ready to be consumed."
+	StatusMessageStockWait              = "Waiting for the stock unit runtime to become ready."
 
 	DefaultRuntimeImage        = "busybox:1.36"
 	StockReservationImage      = DefaultRuntimeImage
@@ -86,7 +98,15 @@ const (
 	UnitSSHContainerName    = "ssh-server"
 	UnitSSHFRPContainerName = "ssh-frpc"
 
-	ConditionSSHReady = "SSHReady"
+	ConditionSSHReady        = "SSHReady"
+	ConditionServerlessReady = "ServerlessReady"
+
+	ServerlessSidecarContainerName = "serverless-sidecar"
+
+	DefaultServerlessFrameworkSocketDir  = "/tmp/serverless-framework"
+	DefaultServerlessFrameworkSocketPath = "/tmp/serverless-framework/framework.sock"
+	DefaultServerlessFrameworkInvokePath = "/invoke"
+	DefaultServerlessFrameworkHealthPath = "/healthz"
 
 	GPUUnitNamePrefix        = "unit-"
 	DefaultStockNamespace    = "runtime-stock"
@@ -167,7 +187,18 @@ type GPUUnitServerlessSpec struct {
 	// +kubebuilder:validation:Minimum=0
 	IdleTimeoutSeconds int32 `json:"idleTimeoutSeconds,omitempty"`
 	// +kubebuilder:validation:Minimum=0
-	MinRequestCount int32 `json:"minRequestCount,omitempty"`
+	MinRequestCount int32                          `json:"minRequestCount,omitempty"`
+	Framework       GPUUnitServerlessFrameworkSpec `json:"framework,omitempty"`
+}
+
+// GPUUnitServerlessFrameworkSpec defines the pod-local UDS-backed HTTP contract served by the user framework container.
+type GPUUnitServerlessFrameworkSpec struct {
+	// SocketPath is the shared unix domain socket path used by the sidecar and framework containers.
+	SocketPath string `json:"socketPath,omitempty"`
+	// InvokePath is the local HTTP path received over the unix domain socket from the sidecar.
+	InvokePath string `json:"invokePath,omitempty"`
+	// HealthPath is the local HTTP path polled over the unix domain socket before dispatch consumption starts.
+	HealthPath string `json:"healthPath,omitempty"`
 }
 
 // GPUUnitStorageMount declares one named storage attachment for the runtime container.
@@ -218,16 +249,26 @@ type GPUUnitSSHStatus struct {
 	AccessCommand string `json:"accessCommand,omitempty"`
 }
 
+// GPUUnitServerlessStatus reports the observed worker-side queue boundary for one runtime unit.
+type GPUUnitServerlessStatus struct {
+	Phase           string `json:"phase,omitempty"`
+	DispatchSubject string `json:"dispatchSubject,omitempty"`
+	SocketPath      string `json:"socketPath,omitempty"`
+	InvokePath      string `json:"invokePath,omitempty"`
+	HealthPath      string `json:"healthPath,omitempty"`
+}
+
 // GPUUnitStatus defines the observed state of GPUUnit.
 type GPUUnitStatus struct {
-	ReadyReplicas      int32              `json:"readyReplicas,omitempty"`
-	Phase              string             `json:"phase,omitempty"`
-	ObservedGeneration int64              `json:"observedGeneration,omitempty"`
-	LastSyncTime       metav1.Time        `json:"lastSyncTime,omitempty"`
-	ServiceName        string             `json:"serviceName,omitempty"`
-	AccessURL          string             `json:"accessURL,omitempty"`
-	SSH                GPUUnitSSHStatus   `json:"ssh,omitempty"`
-	Conditions         []metav1.Condition `json:"conditions,omitempty"`
+	ReadyReplicas      int32                   `json:"readyReplicas,omitempty"`
+	Phase              string                  `json:"phase,omitempty"`
+	ObservedGeneration int64                   `json:"observedGeneration,omitempty"`
+	LastSyncTime       metav1.Time             `json:"lastSyncTime,omitempty"`
+	ServiceName        string                  `json:"serviceName,omitempty"`
+	AccessURL          string                  `json:"accessURL,omitempty"`
+	SSH                GPUUnitSSHStatus        `json:"ssh,omitempty"`
+	Serverless         GPUUnitServerlessStatus `json:"serverless,omitempty"`
+	Conditions         []metav1.Condition      `json:"conditions,omitempty"`
 }
 
 // +kubebuilder:object:root=true

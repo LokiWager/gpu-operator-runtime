@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	runtimev1alpha1 "github.com/loki/gpu-operator-runtime/api/v1alpha1"
 	"github.com/loki/gpu-operator-runtime/pkg/serverless"
 )
 
@@ -36,5 +37,34 @@ func TestNormalizeCreateServerlessInvocationRequest_RejectsInvalidRequestID(t *t
 	})
 	if err == nil {
 		t.Fatalf("expected validation error")
+	}
+}
+
+func TestNormalizeGPUUnitServerlessFramework_DefaultsAndCleansPaths(t *testing.T) {
+	spec, err := NormalizeGPUUnitServerlessFramework(runtimev1alpha1.GPUUnitServerlessFrameworkSpec{
+		SocketPath: "/tmp/serverless-framework/nested/framework.sock",
+		InvokePath: "invoke/",
+		HealthPath: "//healthz",
+	})
+	if err != nil {
+		t.Fatalf("normalize framework spec: %v", err)
+	}
+	if spec.SocketPath != "/tmp/serverless-framework/nested/framework.sock" {
+		t.Fatalf("expected normalized socket path, got %s", spec.SocketPath)
+	}
+	if spec.InvokePath != "/invoke" {
+		t.Fatalf("expected invoke path /invoke, got %s", spec.InvokePath)
+	}
+	if spec.HealthPath != "/healthz" {
+		t.Fatalf("expected health path /healthz, got %s", spec.HealthPath)
+	}
+}
+
+func TestNormalizeGPUUnitServerlessFrameworkRejectsSocketOutsideSharedDir(t *testing.T) {
+	_, err := NormalizeGPUUnitServerlessFramework(runtimev1alpha1.GPUUnitServerlessFrameworkSpec{
+		SocketPath: "/tmp/framework.sock",
+	})
+	if err == nil {
+		t.Fatalf("expected socket path validation error")
 	}
 }

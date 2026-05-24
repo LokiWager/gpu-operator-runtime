@@ -62,29 +62,30 @@ type OperatorJob struct {
 
 // GPUUnitRuntime is the API-facing runtime view of a GPUUnit object.
 type GPUUnitRuntime struct {
-	Name                 string                                `json:"name"`
-	Namespace            string                                `json:"namespace"`
-	Lifecycle            string                                `json:"lifecycle"`
-	SpecName             string                                `json:"specName"`
-	SourceStockName      string                                `json:"sourceStockName,omitempty"`
-	SourceStockNamespace string                                `json:"sourceStockNamespace,omitempty"`
-	Image                string                                `json:"image,omitempty"`
-	Memory               string                                `json:"memory,omitempty"`
-	GPU                  int32                                 `json:"gpu,omitempty"`
-	Template             runtimev1alpha1.GPUUnitTemplate       `json:"template,omitempty"`
-	Access               runtimev1alpha1.GPUUnitAccess         `json:"access,omitempty"`
-	SSH                  runtimev1alpha1.GPUUnitSSHSpec        `json:"ssh,omitempty"`
-	Serverless           runtimev1alpha1.GPUUnitServerlessSpec `json:"serverless,omitempty"`
-	StorageMounts        []runtimev1alpha1.GPUUnitStorageMount `json:"storageMounts,omitempty"`
-	Phase                string                                `json:"phase"`
-	ReadyReplicas        int32                                 `json:"readyReplicas"`
-	ObservedGeneration   int64                                 `json:"observedGeneration"`
-	LastSyncTime         time.Time                             `json:"lastSyncTime,omitempty"`
-	ServiceName          string                                `json:"serviceName,omitempty"`
-	AccessURL            string                                `json:"accessURL,omitempty"`
-	SSHStatus            runtimev1alpha1.GPUUnitSSHStatus      `json:"sshStatus,omitempty"`
-	Reason               string                                `json:"reason,omitempty"`
-	Message              string                                `json:"message,omitempty"`
+	Name                 string                                  `json:"name"`
+	Namespace            string                                  `json:"namespace"`
+	Lifecycle            string                                  `json:"lifecycle"`
+	SpecName             string                                  `json:"specName"`
+	SourceStockName      string                                  `json:"sourceStockName,omitempty"`
+	SourceStockNamespace string                                  `json:"sourceStockNamespace,omitempty"`
+	Image                string                                  `json:"image,omitempty"`
+	Memory               string                                  `json:"memory,omitempty"`
+	GPU                  int32                                   `json:"gpu,omitempty"`
+	Template             runtimev1alpha1.GPUUnitTemplate         `json:"template,omitempty"`
+	Access               runtimev1alpha1.GPUUnitAccess           `json:"access,omitempty"`
+	SSH                  runtimev1alpha1.GPUUnitSSHSpec          `json:"ssh,omitempty"`
+	Serverless           runtimev1alpha1.GPUUnitServerlessSpec   `json:"serverless,omitempty"`
+	StorageMounts        []runtimev1alpha1.GPUUnitStorageMount   `json:"storageMounts,omitempty"`
+	Phase                string                                  `json:"phase"`
+	ReadyReplicas        int32                                   `json:"readyReplicas"`
+	ObservedGeneration   int64                                   `json:"observedGeneration"`
+	LastSyncTime         time.Time                               `json:"lastSyncTime,omitempty"`
+	ServiceName          string                                  `json:"serviceName,omitempty"`
+	AccessURL            string                                  `json:"accessURL,omitempty"`
+	SSHStatus            runtimev1alpha1.GPUUnitSSHStatus        `json:"sshStatus,omitempty"`
+	ServerlessStatus     runtimev1alpha1.GPUUnitServerlessStatus `json:"serverlessStatus,omitempty"`
+	Reason               string                                  `json:"reason,omitempty"`
+	Message              string                                  `json:"message,omitempty"`
 }
 
 // ServerlessInvocationAck is the API-facing acknowledgement for one queued serverless invocation.
