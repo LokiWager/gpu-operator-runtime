@@ -187,7 +187,9 @@ curl -X POST http://127.0.0.1:8080/api/v1/serverless/invocations \
   }'
 ```
 
-At this stage, the manager, activator, worker sidecar, and local framework contract cover the full execution handoff from ingress queue to worker-local invocation. The next chapter will focus on worker lifecycle policy: prewarm, idle scale-down, and durable async result handling.
+At this stage, the manager, activator, worker sidecar, and local framework contract cover the full execution handoff from ingress queue to worker-local invocation.
+
+The activator now reconciles `serverless.minAvailableCount` and `serverless.idleTimeoutSeconds` from the GPUUnit serverless spec. Durable invocation result storage is intentionally left to the control-plane result consumer planned for the ScyllaDB-backed Part 17.
 
 Build the standalone userspace image acceleration tool:
 

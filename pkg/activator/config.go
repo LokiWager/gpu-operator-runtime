@@ -11,26 +11,32 @@ import (
 )
 
 const (
-	defaultConsumerName    = "runtime-activator"
-	defaultWorkerReadyWait = "2m"
-	defaultWorkerPoll      = "2s"
+	defaultConsumerName        = "runtime-activator"
+	defaultMetricsConsumerName = "runtime-activator-metrics"
+	defaultWorkerReadyWait     = "2m"
+	defaultWorkerPoll          = "2s"
+	defaultLifecycleInterval   = "15s"
 )
 
 // Config captures the local process settings for the dedicated serverless activator.
 type Config struct {
-	Serverless         serverless.NATSConfig `yaml:"serverless"`
-	ConsumerName       string                `yaml:"consumerName"`
-	WorkerReadyWait    string                `yaml:"workerReadyWait"`
-	WorkerPollInterval string                `yaml:"workerPollInterval"`
+	Serverless          serverless.NATSConfig `yaml:"serverless"`
+	ConsumerName        string                `yaml:"consumerName"`
+	MetricsConsumerName string                `yaml:"metricsConsumerName"`
+	WorkerReadyWait     string                `yaml:"workerReadyWait"`
+	WorkerPollInterval  string                `yaml:"workerPollInterval"`
+	LifecycleInterval   string                `yaml:"lifecycleInterval"`
 }
 
 // DefaultConfig returns the baseline activator settings.
 func DefaultConfig() Config {
 	return Config{
-		Serverless:         serverless.DefaultNATSConfig(),
-		ConsumerName:       defaultConsumerName,
-		WorkerReadyWait:    defaultWorkerReadyWait,
-		WorkerPollInterval: defaultWorkerPoll,
+		Serverless:          serverless.DefaultNATSConfig(),
+		ConsumerName:        defaultConsumerName,
+		MetricsConsumerName: defaultMetricsConsumerName,
+		WorkerReadyWait:     defaultWorkerReadyWait,
+		WorkerPollInterval:  defaultWorkerPoll,
+		LifecycleInterval:   defaultLifecycleInterval,
 	}
 }
 
@@ -64,12 +70,11 @@ func (c Config) Normalized() (Config, error) {
 		return Config{}, fmt.Errorf("serverless.url is required for the activator")
 	}
 
-	cfg.ConsumerName = strings.TrimSpace(cfg.ConsumerName)
-	if cfg.ConsumerName == "" {
-		cfg.ConsumerName = defaultConsumerName
+	if cfg.ConsumerName, err = normalizeConsumerName("consumerName", cfg.ConsumerName, defaultConsumerName); err != nil {
+		return Config{}, err
 	}
-	if strings.ContainsAny(cfg.ConsumerName, " .*>/\\") {
-		return Config{}, fmt.Errorf("consumerName %q is invalid", cfg.ConsumerName)
+	if cfg.MetricsConsumerName, err = normalizeConsumerName("metricsConsumerName", cfg.MetricsConsumerName, defaultMetricsConsumerName); err != nil {
+		return Config{}, err
 	}
 
 	if cfg.WorkerReadyWait == "" {
@@ -84,6 +89,13 @@ func (c Config) Normalized() (Config, error) {
 	}
 	if _, err := time.ParseDuration(cfg.WorkerPollInterval); err != nil {
 		return Config{}, fmt.Errorf("parse workerPollInterval %q: %w", cfg.WorkerPollInterval, err)
+	}
+
+	if cfg.LifecycleInterval == "" {
+		cfg.LifecycleInterval = defaultLifecycleInterval
+	}
+	if _, err := time.ParseDuration(cfg.LifecycleInterval); err != nil {
+		return Config{}, fmt.Errorf("parse lifecycleInterval %q: %w", cfg.LifecycleInterval, err)
 	}
 
 	return cfg, nil
@@ -101,7 +113,24 @@ func (c Config) WorkerPollIntervalDuration() time.Duration {
 	return d
 }
 
+// LifecycleIntervalDuration parses the lifecycle reconcile cadence.
+func (c Config) LifecycleIntervalDuration() time.Duration {
+	d, _ := time.ParseDuration(c.LifecycleInterval)
+	return d
+}
+
 // AckWaitDuration returns the durable queue ack budget required for worker creation and dispatch publication.
 func (c Config) AckWaitDuration() time.Duration {
 	return c.WorkerReadyWaitDuration() + 15*time.Second
+}
+
+func normalizeConsumerName(field, value, fallback string) (string, error) {
+	normalized := strings.TrimSpace(value)
+	if normalized == "" {
+		normalized = fallback
+	}
+	if strings.ContainsAny(normalized, " .*>/\\") {
+		return "", fmt.Errorf("%s %q is invalid", field, normalized)
+	}
+	return normalized, nil
 }

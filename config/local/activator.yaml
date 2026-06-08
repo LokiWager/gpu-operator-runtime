@@ -1,6 +1,8 @@
 consumerName: "runtime-activator"
+metricsConsumerName: "runtime-activator-metrics"
 workerReadyWait: "2m"
 workerPollInterval: "2s"
+lifecycleInterval: "15s"
 serverless:
   url: "nats://127.0.0.1:4222"
   subjectPrefix: "runtime.serverless"

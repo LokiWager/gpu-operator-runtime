@@ -80,7 +80,11 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	logger.Info("starting serverless activator", "consumerName", cfg.ConsumerName, "streamName", cfg.Serverless.StreamName)
+	logger.Info("starting serverless activator",
+		"consumerName", cfg.ConsumerName,
+		"metricsConsumerName", cfg.MetricsConsumerName,
+		"streamName", cfg.Serverless.StreamName,
+	)
 	if err := activatorService.Run(ctx, queue); err != nil {
 		logger.Error("activator stopped with error", "error", err)
 		os.Exit(1)

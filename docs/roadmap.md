@@ -15,6 +15,7 @@
 13. Serverless contract and queue-first invocation with NATS
 14. Dedicated activator service and worker dispatch subjects
 15. Worker sidecar and local framework contract
-16. Worker lifecycle management (prewarm, idle scale-down, and async results)
-17. Reliability and performance engineering
-18. Multi-cluster scheduling and serverless federation
+16. Worker lifecycle management (prewarm, idle scale-down, and metrics-driven worker state)
+17. ScyllaDB-backed invocation result store, local Docker stack, and control-plane result consumer
+18. Reliability and performance engineering
+19. Multi-cluster scheduling and serverless federation

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -19,6 +20,7 @@ type fakeRuntimeControl struct {
 	createUnit  domain.GPUUnitRuntime
 	getUnits    map[string]domain.GPUUnitRuntime
 	createCalls []runtimeService.CreateGPUUnitRequest
+	deleteCalls []string
 }
 
 func (f *fakeRuntimeControl) ListGPUUnits(_ context.Context, _ string) ([]domain.GPUUnitRuntime, error) {
@@ -44,6 +46,11 @@ func (f *fakeRuntimeControl) CreateGPUUnit(_ context.Context, req runtimeService
 
 func (f *fakeRuntimeControl) GetGPUUnit(_ context.Context, _, name string) (domain.GPUUnitRuntime, error) {
 	return f.getUnits[name], nil
+}
+
+func (f *fakeRuntimeControl) DeleteGPUUnit(_ context.Context, namespace, name string) error {
+	f.deleteCalls = append(f.deleteCalls, namespace+"/"+name)
+	return nil
 }
 
 type fakeDispatchPublisher struct {
@@ -212,8 +219,99 @@ func TestServiceProcessInvocationPublishesFailureWhenDispatchFails(t *testing.T)
 
 func TestGeneratedWorkerNameUsesInvocationID(t *testing.T) {
 	name := generatedWorkerName("sd_webui", "inv-1234567890")
-	if name != "unit-sd-webui-12345678" {
+	if name != "unit-sd-webui-worker-12345678" {
 		t.Fatalf("unexpected worker name: %s", name)
+	}
+}
+
+func TestGeneratedWorkerNameSanitizesCustomInvocationID(t *testing.T) {
+	name := generatedWorkerName("sd.webui", "CUSTOM/request:001")
+	if name != "unit-sd-webui-worker-custom-r" {
+		t.Fatalf("unexpected worker name: %s", name)
+	}
+}
+
+func TestLifecycleManagerCreatesPrewarmWorkers(t *testing.T) {
+	cfg := mustActivatorConfig(t)
+	template := domain.GPUUnitRuntime{
+		Name:      "sd-webui-template",
+		Namespace: runtimev1alpha1.DefaultInstanceNamespace,
+		Phase:     runtimev1alpha1.PhaseProgressing,
+		SpecName:  "g1.1",
+		Image:     "python:3.12",
+		Template: runtimev1alpha1.GPUUnitTemplate{
+			Ports: []runtimev1alpha1.GPUUnitPortSpec{{Name: "http", Port: 8080}},
+		},
+		Access: runtimev1alpha1.GPUUnitAccess{PrimaryPort: "http", Scheme: "http"},
+		Serverless: runtimev1alpha1.GPUUnitServerlessSpec{
+			Enabled:           true,
+			RequestID:         "sd-webui",
+			MinAvailableCount: 2,
+		},
+	}
+	runtime := &fakeRuntimeControl{listUnits: []domain.GPUUnitRuntime{template}}
+	lifecycle := NewLifecycleManager(runtime, NewWorkerRegistry(), slog.New(slog.NewTextHandler(io.Discard, nil)), cfg)
+
+	if err := lifecycle.Reconcile(context.Background()); err != nil {
+		t.Fatalf("reconcile lifecycle: %v", err)
+	}
+	if len(runtime.createCalls) != 1 {
+		t.Fatalf("expected one prewarm worker creation, got %d", len(runtime.createCalls))
+	}
+	if runtime.createCalls[0].Serverless.RequestID != "sd-webui" {
+		t.Fatalf("expected serverless policy to be copied, got %+v", runtime.createCalls[0])
+	}
+	if !strings.Contains(runtime.createCalls[0].Name, "-worker-") {
+		t.Fatalf("expected managed worker name, got %s", runtime.createCalls[0].Name)
+	}
+}
+
+func TestLifecycleManagerDeletesIdleManagedWorkers(t *testing.T) {
+	cfg := mustActivatorConfig(t)
+	requestID := "sd-webui"
+	template := domain.GPUUnitRuntime{
+		Name:      "sd-webui-template",
+		Namespace: runtimev1alpha1.DefaultInstanceNamespace,
+		Phase:     runtimev1alpha1.PhaseReady,
+		AccessURL: "http://sd-webui-template.runtime-instance.svc.cluster.local:8080",
+		Serverless: runtimev1alpha1.GPUUnitServerlessSpec{
+			Enabled:            true,
+			RequestID:          requestID,
+			MinAvailableCount:  1,
+			IdleTimeoutSeconds: 1,
+		},
+	}
+	managedWorker := domain.GPUUnitRuntime{
+		Name:      generatedWorkerName(requestID, "inv-aaaaaaaa"),
+		Namespace: runtimev1alpha1.DefaultInstanceNamespace,
+		Phase:     runtimev1alpha1.PhaseReady,
+		AccessURL: "http://managed.runtime-instance.svc.cluster.local:8080",
+		Serverless: runtimev1alpha1.GPUUnitServerlessSpec{
+			Enabled:            true,
+			RequestID:          requestID,
+			MinAvailableCount:  1,
+			IdleTimeoutSeconds: 1,
+		},
+	}
+	runtime := &fakeRuntimeControl{listUnits: []domain.GPUUnitRuntime{template, managedWorker}}
+	lifecycle := NewLifecycleManager(runtime, NewWorkerRegistry(), slog.New(slog.NewTextHandler(io.Discard, nil)), cfg)
+	lifecycle.ObserveMetric(serverless.WorkerMetricMessage{
+		ServerlessRequestID: requestID,
+		WorkerName:          managedWorker.Name,
+		WorkerNamespace:     managedWorker.Namespace,
+		EventType:           serverless.WorkerMetricEventRegistered,
+		Inflight:            0,
+		ReportedAt:          time.Now().Add(-2 * time.Second),
+	})
+
+	if err := lifecycle.Reconcile(context.Background()); err != nil {
+		t.Fatalf("reconcile lifecycle: %v", err)
+	}
+	if len(runtime.deleteCalls) != 1 {
+		t.Fatalf("expected one idle worker deletion, got %d", len(runtime.deleteCalls))
+	}
+	if runtime.deleteCalls[0] != runtimev1alpha1.DefaultInstanceNamespace+"/"+managedWorker.Name {
+		t.Fatalf("unexpected delete calls: %+v", runtime.deleteCalls)
 	}
 }
 

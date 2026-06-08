@@ -20,6 +20,13 @@ type RuntimeControl interface {
 	ListGPUUnits(ctx context.Context, namespace string) ([]domain.GPUUnitRuntime, error)
 	CreateGPUUnit(ctx context.Context, req runtimeService.CreateGPUUnitRequest) (domain.GPUUnitRuntime, bool, error)
 	GetGPUUnit(ctx context.Context, namespace, name string) (domain.GPUUnitRuntime, error)
+	DeleteGPUUnit(ctx context.Context, namespace, name string) error
+}
+
+// Queue captures the NATS consumers the activator needs for ingress and worker metrics.
+type Queue interface {
+	serverless.InvocationConsumer
+	serverless.WorkerMetricConsumer
 }
 
 // Service coordinates durable invocation consumption, worker registration, worker creation, and worker-dispatch publication.
@@ -30,6 +37,7 @@ type Service struct {
 	logger     *slog.Logger
 	cfg        Config
 	registry   *WorkerRegistry
+	lifecycle  *LifecycleManager
 }
 
 // New builds a dedicated activator service.
@@ -37,22 +45,52 @@ func New(runtime RuntimeControl, dispatches serverless.WorkerDispatchPublisher, 
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Service{
+	registry := NewWorkerRegistry()
+	service := &Service{
 		runtime:    runtime,
 		dispatches: dispatches,
 		results:    results,
 		logger:     logger,
 		cfg:        cfg,
-		registry:   NewWorkerRegistry(),
+		registry:   registry,
 	}
+	service.lifecycle = NewLifecycleManager(runtime, registry, logger, cfg)
+	return service
 }
 
-// Run drains queued invocations from JetStream until the context is cancelled.
-func (s *Service) Run(ctx context.Context, consumer serverless.InvocationConsumer) error {
-	if consumer == nil {
-		return fmt.Errorf("invocation consumer is required")
+// Run drains queued invocations and worker metrics from JetStream until the context is cancelled.
+func (s *Service) Run(ctx context.Context, queue Queue) error {
+	if queue == nil {
+		return fmt.Errorf("activator queue is required")
 	}
-	return consumer.ConsumeInvocations(ctx, s.cfg.ConsumerName, s.cfg.AckWaitDuration(), s.ProcessInvocation)
+
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	errCh := make(chan error, 2)
+	runConsumer := func(name string, fn func() error) {
+		go func() {
+			if err := fn(); err != nil && runCtx.Err() == nil {
+				errCh <- fmt.Errorf("%s: %w", name, err)
+			}
+		}()
+	}
+
+	runConsumer("invocation consumer", func() error {
+		return queue.ConsumeInvocations(runCtx, s.cfg.ConsumerName, s.cfg.AckWaitDuration(), s.ProcessInvocation)
+	})
+	runConsumer("worker metrics consumer", func() error {
+		return queue.ConsumeWorkerMetrics(runCtx, s.cfg.MetricsConsumerName, s.cfg.AckWaitDuration(), s.HandleWorkerMetric)
+	})
+	go s.lifecycleLoop(runCtx)
+
+	select {
+	case <-runCtx.Done():
+		return nil
+	case err := <-errCh:
+		cancel()
+		return err
+	}
 }
 
 // ProcessInvocation resolves one worker, publishes one worker-targeted dispatch message, and emits durable failure results when dispatch cannot proceed.
@@ -108,6 +146,37 @@ func (s *Service) publishResult(ctx context.Context, result serverless.Invocatio
 		"error", result.Error,
 	)
 	return nil
+}
+
+// HandleWorkerMetric records one worker metric event for lifecycle decisions.
+func (s *Service) HandleWorkerMetric(_ context.Context, metric serverless.WorkerMetricMessage) error {
+	s.lifecycle.ObserveMetric(metric)
+	return nil
+}
+
+func (s *Service) lifecycleLoop(ctx context.Context) {
+	interval := s.cfg.LifecycleIntervalDuration()
+	if interval <= 0 {
+		return
+	}
+	s.reconcileLifecycle(ctx)
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.reconcileLifecycle(ctx)
+		}
+	}
+}
+
+func (s *Service) reconcileLifecycle(ctx context.Context) {
+	if err := s.lifecycle.Reconcile(ctx); err != nil {
+		s.logger.Error("serverless lifecycle reconcile failed", "error", err)
+	}
 }
 
 func (s *Service) acquireWorker(ctx context.Context, requestID, invocationID string) (Worker, error) {
@@ -236,22 +305,54 @@ func buildCreateRequest(template domain.GPUUnitRuntime, invocationID string) run
 }
 
 func generatedWorkerName(requestID, invocationID string) string {
-	base := strings.ToLower(strings.TrimSpace(requestID))
-	base = strings.ReplaceAll(base, "_", "-")
-	base = strings.Trim(base, "-")
+	prefix := generatedWorkerStem(requestID)
+	suffix := sanitizeWorkerNameToken(strings.TrimPrefix(strings.ToLower(strings.TrimSpace(invocationID)), "inv-"))
+	if suffix == "" {
+		suffix = "worker"
+	}
+	if len(suffix) > 8 {
+		suffix = suffix[:8]
+		suffix = strings.Trim(suffix, "-")
+	}
+	if suffix == "" {
+		suffix = "worker"
+	}
+	return prefix + "-worker-" + suffix
+}
+
+func generatedWorkerStem(requestID string) string {
+	base := sanitizeWorkerNameToken(requestID)
 	if base == "" {
 		base = "serverless"
 	}
-	suffix := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(invocationID)), "inv-")
-	if len(suffix) > 8 {
-		suffix = suffix[:8]
-	}
 	prefix := "unit-" + base
-	if len(prefix) > 54 {
-		prefix = prefix[:54]
+	if len(prefix) > 47 {
+		prefix = prefix[:47]
 		prefix = strings.TrimRight(prefix, "-")
 	}
-	return prefix + "-" + suffix
+	return prefix
+}
+
+func isActivatorManagedWorker(unit domain.GPUUnitRuntime) bool {
+	if unit.Serverless.RequestID == "" {
+		return false
+	}
+	return strings.HasPrefix(unit.Name, generatedWorkerStem(unit.Serverless.RequestID)+"-worker-")
+}
+
+func sanitizeWorkerNameToken(value string) string {
+	var out strings.Builder
+	for _, char := range strings.ToLower(strings.TrimSpace(value)) {
+		switch {
+		case char >= 'a' && char <= 'z':
+			out.WriteRune(char)
+		case char >= '0' && char <= '9':
+			out.WriteRune(char)
+		default:
+			out.WriteByte('-')
+		}
+	}
+	return strings.Trim(out.String(), "-")
 }
 
 func isReadyWorkerUnit(unit domain.GPUUnitRuntime, requestID string) bool {
@@ -275,6 +376,11 @@ func firstPendingWorker(units []domain.GPUUnitRuntime, requestID string) (domain
 }
 
 func templateUnit(units []domain.GPUUnitRuntime) domain.GPUUnitRuntime {
+	for _, unit := range units {
+		if !isActivatorManagedWorker(unit) {
+			return unit
+		}
+	}
 	return units[0]
 }
 
