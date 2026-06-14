@@ -2,21 +2,22 @@
 
 Teaching-oriented Golang + Kubernetes project for building a GPU runtime control plane.
 
-The current chapter adds the worker-side half of the serverless execution boundary:
+The current chapter adds durable invocation result storage for the serverless execution boundary:
 
 - `GPUUnit` still records a `serverless` policy block owned by the control plane
 - the control plane-generated `requestID` still lives on the unit spec instead of being invented by the runtime
 - the manager can optionally connect to NATS JetStream for durable queue-first invocation ingress
 - `/api/v1/serverless/invocations` still persists invocation envelopes before any worker executes them
 - the standalone `activator` process still consumes queued invocations, registers ready workers in memory, and publishes worker-targeted dispatch messages
-- a new `serverless-sidecar` command now consumes those worker-targeted dispatch subjects from inside the worker Pod
+- the `serverless-sidecar` command still consumes those worker-targeted dispatch subjects from inside the worker Pod
 - the user-facing framework now has a concrete unix domain socket contract that the sidecar calls
 - a small Go helper package under `pkg/framework` turns that contract into one reusable HTTP handler for framework-based images
 - the sidecar is the only component that touches NATS credentials and subject names; the framework never gets raw queue access
 - `mode: "sync"` and `mode: "async"` now share the same worker loop, with `sync` receiving an invocation-specific reply in addition to the durable result subject
+- a new `result-store` command consumes `runtime.serverless.result.*` and persists invocation metadata to ScyllaDB for control-plane lookup
 - the standalone `image-accelerator` tool from Part 12 remains the cold-start preparation step for later worker lifecycle work
 
-The operator API still seeds stock units into `runtime-stock`, and the runtime API still consumes ready stock into active `GPUUnit` objects in `runtime-instance`. This chapter finishes the worker Pod boundary so activator dispatch messages can now be consumed by a trusted sidecar instead of being handed directly to user code.
+The operator API still seeds stock units into `runtime-stock`, and the runtime API still consumes ready stock into active `GPUUnit` objects in `runtime-instance`. This chapter keeps activator lifecycle management separate from result persistence so the control-plane result path can scale independently.
 
 ## Prerequisites
 
@@ -90,29 +91,44 @@ Run the shared storage proxy in a second terminal:
 GOTOOLCHAIN=go1.26.0 go run ./cmd/runtime-proxy --http-addr :8090
 ```
 
-If you want to exercise the new queue-first serverless flow locally, start a JetStream-enabled NATS in a third terminal:
+If you want to exercise the new queue-first serverless flow, deploy ScyllaDB inside the cluster:
 
 ```bash
-nats-server -js
+kubectl apply -k config/scylla
+kubectl -n runtime-data wait --for=condition=ready pod -l app.kubernetes.io/name=scylla --timeout=10m
 ```
 
-Then start the dedicated activator in a fourth terminal:
+The examples assume NATS JetStream is also exposed through an in-cluster Service:
+
+```text
+nats://nats.messaging.svc.cluster.local:4222
+```
+
+The dedicated activator has its own YAML config and should run where it can reach the Kubernetes API and the in-cluster NATS Service:
 
 ```bash
 GOTOOLCHAIN=go1.26.0 go run ./cmd/activator --config config/local/activator.yaml
 ```
 
-Start a minimal example framework in a fifth terminal:
+Start the result-store consumer where it can reach both NATS and ScyllaDB service DNS:
+
+```bash
+GOTOOLCHAIN=go1.26.0 go run ./cmd/result-store --config config/local/result-store.yaml
+```
+
+For out-of-cluster debugging, use `kubectl port-forward` and override the YAML hosts to `127.0.0.1`. Do not point production traffic at Pod IPs or public endpoints.
+
+Start a minimal example framework in another terminal:
 
 ```bash
 SERVERLESS_FRAMEWORK_SOCKET_PATH=/tmp/serverless-framework/framework.sock \
 GOTOOLCHAIN=go1.26.0 go run ./cmd/framework-echo
 ```
 
-Then start the worker sidecar loop in a sixth terminal:
+Then start the worker sidecar loop in another terminal:
 
 ```bash
-SERVERLESS_NATS_URL=nats://127.0.0.1:4222 \
+SERVERLESS_NATS_URL=nats://nats.messaging.svc.cluster.local:4222 \
 SERVERLESS_SUBJECT_PREFIX=runtime.serverless \
 SERVERLESS_STREAM_NAME=RUNTIME_SERVERLESS \
 SERVERLESS_WORKER_NAME=sd-webui-template \
@@ -135,33 +151,20 @@ Optional serverless queue config now lives under `serverless:` in `config/local/
 
 ```yaml
 serverless:
-  url: "nats://127.0.0.1:4222"
+  url: "nats://nats.messaging.svc.cluster.local:4222"
   subjectPrefix: "runtime.serverless"
   streamName: "RUNTIME_SERVERLESS"
   streamReplicas: 1
   streamMaxAge: "72h"
   connectTimeout: "5s"
   duplicatesWindow: "24h"
-```
-
-For local development, `127.0.0.1` is fine. For in-cluster deployment, point `url` at the
-NATS Service DNS name and configure a `networkPolicyTarget` so runtime Pods may reach only
-the NATS Pods instead of opening broad internal egress:
-
-```yaml
-serverless:
-  url: "nats://nats.messaging.svc.cluster.local:4222"
-  subjectPrefix: "runtime.serverless"
-  streamName: "RUNTIME_SERVERLESS"
   networkPolicyTarget:
     namespace: "messaging"
     podLabels:
       app.kubernetes.io/name: "nats"
 ```
 
-If `serverless.url` points to a Kubernetes `*.svc` hostname and `networkPolicyTarget` is
-missing, the runtime controller now treats that as a configuration error instead of silently
-creating a Pod that cannot reach NATS.
+If `serverless.url` points to a Kubernetes `*.svc` hostname and `networkPolicyTarget` is missing, the runtime controller now treats that as a configuration error instead of silently creating a Pod that cannot reach NATS.
 
 The dedicated activator has its own local YAML config:
 
@@ -189,7 +192,7 @@ curl -X POST http://127.0.0.1:8080/api/v1/serverless/invocations \
 
 At this stage, the manager, activator, worker sidecar, and local framework contract cover the full execution handoff from ingress queue to worker-local invocation.
 
-The activator now reconciles `serverless.minAvailableCount` and `serverless.idleTimeoutSeconds` from the GPUUnit serverless spec. Durable invocation result storage is intentionally left to the control-plane result consumer planned for the ScyllaDB-backed Part 17.
+The activator reconciles `serverless.minAvailableCount` and `serverless.idleTimeoutSeconds` from the GPUUnit serverless spec. The result-store process consumes durable worker results and writes them to ScyllaDB so the control plane can serve async result lookup without asking activator or workers.
 
 Build the standalone userspace image acceleration tool:
 

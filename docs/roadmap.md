@@ -16,6 +16,6 @@
 14. Dedicated activator service and worker dispatch subjects
 15. Worker sidecar and local framework contract
 16. Worker lifecycle management (prewarm, idle scale-down, and metrics-driven worker state)
-17. ScyllaDB-backed invocation result store, local Docker stack, and control-plane result consumer
+17. ScyllaDB-backed invocation result store, Kubernetes ScyllaDB stack, and control-plane result consumer
 18. Reliability and performance engineering
 19. Multi-cluster scheduling and serverless federation

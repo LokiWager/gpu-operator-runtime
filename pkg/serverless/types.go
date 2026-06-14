@@ -173,6 +173,11 @@ type WorkerMetricConsumer interface {
 	ConsumeWorkerMetrics(ctx context.Context, durable string, ackWait time.Duration, handler func(context.Context, WorkerMetricMessage) error) error
 }
 
+// InvocationResultConsumer continuously drains completed invocation results from the durable queue.
+type InvocationResultConsumer interface {
+	ConsumeInvocationResults(ctx context.Context, durable string, ackWait time.Duration, handler func(context.Context, InvocationResultMessage) error) error
+}
+
 // WorkerDispatchConsumer continuously drains worker-targeted dispatch messages for one concrete worker sidecar.
 type WorkerDispatchConsumer interface {
 	ConsumeWorkerDispatches(

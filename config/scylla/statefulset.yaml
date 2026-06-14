@@ -1,0 +1,66 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: scylla
+  namespace: runtime-data
+  labels:
+    app.kubernetes.io/name: scylla
+    app.kubernetes.io/component: result-store
+spec:
+  serviceName: scylla
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: scylla
+      app.kubernetes.io/component: result-store
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: scylla
+        app.kubernetes.io/component: result-store
+    spec:
+      terminationGracePeriodSeconds: 120
+      containers:
+        - name: scylla
+          image: scylladb/scylla:latest
+          imagePullPolicy: IfNotPresent
+          args:
+            - "--smp"
+            - "1"
+            - "--memory"
+            - "1G"
+            - "--overprovisioned"
+            - "1"
+            - "--api-address"
+            - "0.0.0.0"
+          ports:
+            - name: cql
+              containerPort: 9042
+            - name: api
+              containerPort: 10000
+          readinessProbe:
+            tcpSocket:
+              port: cql
+            initialDelaySeconds: 60
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 30
+          resources:
+            requests:
+              cpu: "1"
+              memory: "2Gi"
+            limits:
+              cpu: "2"
+              memory: "4Gi"
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/scylla
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 20Gi

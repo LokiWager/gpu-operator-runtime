@@ -330,6 +330,65 @@ func (p *NATSPublisher) ConsumeWorkerMetrics(ctx context.Context, durable string
 	}
 }
 
+// ConsumeInvocationResults drains durable invocation completion events for control-plane result storage.
+func (p *NATSPublisher) ConsumeInvocationResults(ctx context.Context, durable string, ackWait time.Duration, handler func(context.Context, InvocationResultMessage) error) error {
+	if !p.Enabled() {
+		return fmt.Errorf("serverless queue publisher is not configured")
+	}
+	if durable == "" {
+		return fmt.Errorf("invocation result durable name is required")
+	}
+	if handler == nil {
+		return fmt.Errorf("invocation result handler is required")
+	}
+
+	consumer, err := p.js.CreateOrUpdateConsumer(ctx, p.cfg.StreamName, jetstream.ConsumerConfig{
+		Durable:       durable,
+		AckPolicy:     jetstream.AckExplicitPolicy,
+		FilterSubject: fmt.Sprintf("%s.result.*", p.cfg.SubjectPrefix),
+		AckWait:       ackWait,
+	})
+	if err != nil {
+		return fmt.Errorf("create or update invocation result consumer %s: %w", durable, err)
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		default:
+		}
+
+		batch, err := consumer.Fetch(1, jetstream.FetchMaxWait(2*time.Second))
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+			return fmt.Errorf("fetch invocation result batch: %w", err)
+		}
+
+		for jsMsg := range batch.Messages() {
+			var msg InvocationResultMessage
+			if err := json.Unmarshal(jsMsg.Data(), &msg); err != nil {
+				p.logger.Error("discarding invalid invocation result payload", "subject", jsMsg.Subject(), "error", err)
+				_ = jsMsg.Term()
+				continue
+			}
+			if err := handler(ctx, msg); err != nil {
+				p.logger.Error("invocation result handling failed", "invocationID", msg.InvocationID, "serverlessRequestID", msg.ServerlessRequestID, "error", err)
+				_ = jsMsg.NakWithDelay(2 * time.Second)
+				continue
+			}
+			if err := jsMsg.Ack(); err != nil {
+				return fmt.Errorf("ack invocation result %s: %w", msg.InvocationID, err)
+			}
+		}
+		if err := batch.Error(); err != nil && ctx.Err() == nil {
+			return fmt.Errorf("consume invocation result batch: %w", err)
+		}
+	}
+}
+
 // ConsumeWorkerDispatches drains worker-targeted dispatch messages for one concrete worker sidecar and acknowledges them on successful handling.
 func (p *NATSPublisher) ConsumeWorkerDispatches(
 	ctx context.Context,

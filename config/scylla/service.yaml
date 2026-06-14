@@ -1,0 +1,39 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: scylla-client
+  namespace: runtime-data
+  labels:
+    app.kubernetes.io/name: scylla
+    app.kubernetes.io/component: result-store
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: scylla
+    app.kubernetes.io/component: result-store
+  ports:
+    - name: cql
+      port: 9042
+      targetPort: cql
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: scylla
+  namespace: runtime-data
+  labels:
+    app.kubernetes.io/name: scylla
+    app.kubernetes.io/component: result-store
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app.kubernetes.io/name: scylla
+    app.kubernetes.io/component: result-store
+  ports:
+    - name: cql
+      port: 9042
+      targetPort: cql
+    - name: api
+      port: 10000
+      targetPort: api

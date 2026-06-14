@@ -1,8 +1,5 @@
-consumerName: "runtime-activator"
-metricsConsumerName: "runtime-activator-metrics"
-workerReadyWait: "2m"
-workerPollInterval: "2s"
-lifecycleInterval: "15s"
+consumerName: "runtime-result-store"
+ackWait: "30s"
 serverless:
   url: "nats://nats.messaging.svc.cluster.local:4222"
   subjectPrefix: "runtime.serverless"
@@ -15,3 +12,13 @@ serverless:
     namespace: "messaging"
     podLabels:
       app.kubernetes.io/name: "nats"
+scylla:
+  hosts:
+    - "scylla-client.runtime-data.svc.cluster.local:9042"
+  keyspace: "runtime_serverless"
+  resultsTable: "invocation_results"
+  connectTimeout: "5s"
+  requestTimeout: "5s"
+  replicationFactor: 1
+  autoMigrate: true
+  maxInlineBodyBytes: 1048576
