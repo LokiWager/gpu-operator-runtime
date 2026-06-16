@@ -1,0 +1,27 @@
+metricsBindAddress: ":8082"
+healthProbeBindAddress: ":8081"
+leaderElect: false
+metricsSecure: false
+enableHTTP2: false
+blockedEgressCIDRs:
+  - "10.0.0.0/8"
+  - "100.64.0.0/10"
+  - "169.254.0.0/16"
+  - "172.16.0.0/12"
+  - "192.168.0.0/16"
+serverless:
+  url: "nats://nats.messaging.svc.cluster.local:4222"
+  subjectPrefix: "runtime.serverless"
+  streamName: "RUNTIME_SERVERLESS"
+  streamReplicas: 1
+  streamMaxAge: "72h"
+  connectTimeout: "5s"
+  duplicatesWindow: "24h"
+  networkPolicyTarget:
+    namespace: "messaging"
+    podLabels:
+      app.kubernetes.io/name: "nats"
+serverlessWorker:
+  image: "ghcr.io/lokiwager/gpu-runtime-serverless-sidecar:latest"
+  healthPort: 8091
+  heartbeatInterval: "15s"

@@ -1,5 +1,7 @@
 # Runtime Tutorial Roadmap
 
+## Published Chapters
+
 1. Environment bootstrap and minimal runtime skeleton
 2. Minimal Operator skeleton (CRD + reconcile + status)
 3. Stock-based fast start simulation
@@ -17,5 +19,146 @@
 15. Worker sidecar and local framework contract
 16. Worker lifecycle management (prewarm, idle scale-down, and metrics-driven worker state)
 17. ScyllaDB-backed invocation result store, Kubernetes ScyllaDB stack, and control-plane result consumer
-18. Reliability and performance engineering
-19. Multi-cluster scheduling and serverless federation
+18. Split runtime control plane with separate controller-manager and runtime-api processes
+
+## Planned Chapters
+
+### 19. Kubernetes-Native Inventory and Allocation
+
+Goal: replace the empty-Pod stock placeholder with Kubernetes-native resource allocation primitives.
+
+Code scope:
+
+- Stop treating an empty Pod as the source of truth for GPU stock.
+- Use Kubernetes extended resources for whole-GPU allocation through `nvidia.com/gpu`.
+- Use `ResourceQuota` as the namespace or tenant guardrail for aggregate GPU, CPU, memory, storage, and object-count limits.
+- Introduce a runtime allocation view that reads Kubernetes state instead of inventing a separate scheduler.
+- Add a DRA-ready abstraction that can map future product specs to `DeviceClass`, `ResourceClaim`, and `ResourceSlice` when the cluster supports Dynamic Resource Allocation.
+- Keep runtime responsible for product-level validation, status visibility, and audit hooks, while Kubernetes remains the final allocator.
+
+Blog focus:
+
+- Why empty Pod stock is inaccurate and operationally awkward.
+- What Kubernetes already gives us: Device Plugin extended resources, scheduler placement, ResourceQuota, and DRA.
+- Why the runtime should not compete with kube-scheduler.
+- The boundary between product inventory visibility and actual Kubernetes allocation.
+
+### 20. GPU Virtualization with HAMi
+
+Goal: support fractional or virtual GPU requests for workloads that do not need an entire physical GPU.
+
+Code scope:
+
+- Extend `GPUUnit` spec to express vGPU requirements such as GPU count, GPU memory, and optional GPU core percentage.
+- Add a HAMi runtime mode that renders the appropriate resource requests, limits, scheduler name, and annotations.
+- Add examples for shared inference workloads that request GPU memory instead of a full card.
+- Surface vGPU allocation information in status when available.
+- Keep HAMi integration optional so whole-GPU clusters can continue using standard device plugin resources.
+
+Blog focus:
+
+- Why whole-GPU allocation wastes capacity for many inference and notebook workloads.
+- How HAMi complements Kubernetes Device Plugin and DRA rather than replacing the whole platform.
+- What HAMi owns: fine-grained GPU scheduling, device allocation, and in-container isolation.
+- What the runtime owns: product contract, API validation, status, and tenant-facing semantics.
+
+### 21. Reliable Serverless Execution
+
+Goal: make the serverless queue path reliable under retries, failures, duplicate delivery, and worker pressure.
+
+Code scope:
+
+- Add NATS consumer settings for `ackWait`, `maxDeliver`, and retry backoff.
+- Add dead-letter subjects such as `runtime.serverless.dlq.*`.
+- Define serverless invocation states such as `queued`, `dispatching`, `running`, `succeeded`, `failed`, and `expired`.
+- Persist state transitions in the result store or a companion state table.
+- Add timeout classification for activator worker creation, sidecar framework calls, and result-store writes.
+- Add idempotency rules for duplicate invocation messages, duplicate dispatches, and duplicate results.
+- Add basic backpressure so activator does not create unlimited GPU workers when queues grow faster than capacity.
+
+Blog focus:
+
+- Queue-first means at-least-once delivery, not exactly-once execution.
+- Retry, timeout, DLQ, and idempotency are one design, not separate patches.
+- Backpressure protects the GPU cluster from turning queue pressure into uncontrolled Pod creation.
+
+### 22. Security and Auditability
+
+Goal: make runtime actions attributable, least-privileged, and safe for multi-tenant operation.
+
+Code scope:
+
+- Add tenant and actor context to API requests without turning runtime into the full control plane.
+- Add append-only audit records for create, update, delete, storage, proxy, SSH, and serverless operations.
+- Add Secret-backed configuration references for NATS and ScyllaDB credentials instead of plain YAML values.
+- Add TLS/auth settings for NATS and ScyllaDB clients.
+- Tighten RBAC for controller-manager, runtime-api, activator, result-store, and worker sidecar.
+- Refine NetworkPolicy boundaries between API, controller, NATS, ScyllaDB, worker Pods, and user containers.
+
+Blog focus:
+
+- Audit log is not application log.
+- Runtime records who did what to which resource, while the control plane owns user identity, policy, and billing decisions.
+- Credential and network boundaries must match process boundaries.
+
+### 23. High Availability and Operations
+
+Goal: make the runtime deployable and observable as multiple independent production services.
+
+Code scope:
+
+- Enable controller-manager leader election in the split deployment.
+- Run runtime-api as a stateless multi-replica Deployment.
+- Define result-store and activator high-availability behavior around durable NATS consumers.
+- Add readiness, liveness, startup probes, and graceful shutdown to each process.
+- Expand metrics for API latency, reconcile latency, queue lag, consumer errors, worker ready latency, result write latency, and DLQ counts.
+- Add Prometheus `ServiceMonitor` examples and alert rule examples.
+- Document backup and restore expectations for ScyllaDB-backed runtime state.
+
+Blog focus:
+
+- Which components can scale horizontally and which require leader election or durable-consumer coordination.
+- How to debug request path failures from API to queue to worker to result store.
+- Which metrics matter for SLOs and on-call operations.
+
+### 24. Usage Accounting, Not Billing
+
+Goal: let runtime produce trusted usage facts while keeping pricing and billing in the control plane.
+
+Code scope:
+
+- Add usage events for resource lifecycle transitions such as GPUUnit start/stop/delete, GPUStorage bind/release, and serverless invocation start/finish.
+- Add usage records that convert lifecycle events into measurable intervals.
+- Track dimensions such as tenant ID, project ID, resource type, GPU model, GPU count, CPU, memory, storage size, invocation duration, result bytes, and timestamps.
+- Add idempotency keys for usage events so controller retries do not duplicate accounting.
+- Add runtime usage APIs or export subjects for raw usage events and finalized usage records.
+- Avoid price, invoice, discount, package, credit, payment, or billing-cycle logic in runtime.
+
+Control-plane boundary:
+
+- Runtime produces usage facts.
+- Control plane applies pricing, discounts, quotas, packages, invoices, payments, and customer-facing billing policy.
+
+Blog focus:
+
+- Runtime accounting is not billing.
+- Billing depends on trusted measurement, but business pricing must stay above the runtime layer.
+- Usage records should be append-friendly, auditable, and reconstructable from resource lifecycle facts.
+
+### 25. Multi-Cluster Scheduling and Federation
+
+Goal: extend the runtime model beyond one Kubernetes cluster without collapsing cluster-local control into a global scheduler.
+
+Code scope:
+
+- Define a cluster registration and capability report model.
+- Report GPU capacity, GPU classes, storage classes, runtime version, and health signals to the control plane.
+- Keep each cluster running its own controller-manager, runtime-api, activator, sidecars, and result-store path.
+- Let the control plane choose a target cluster based on policy, quota, locality, and available capacity.
+- Add cross-cluster status aggregation without making one runtime directly control another cluster.
+
+Blog focus:
+
+- Federation should not turn the runtime into a global scheduler.
+- Cluster-local Kubernetes remains responsible for final allocation.
+- The control plane chooses where to send work; each runtime owns execution inside its cluster.

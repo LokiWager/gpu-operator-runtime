@@ -78,11 +78,23 @@ make tidy
 make run
 ```
 
-`make run` now starts the manager with `config/local/runtime-manager.yaml`.
+`make run` starts the controller manager with `config/local/controller-manager.yaml`.
 If you want to point at a different local config file directly:
 
 ```bash
-GOTOOLCHAIN=go1.26.0 go run ./cmd/main.go --config config/local/runtime-manager.yaml
+GOTOOLCHAIN=go1.26.0 go run ./cmd/controller-manager --config config/local/controller-manager.yaml
+```
+
+Start the runtime API in a second terminal:
+
+```bash
+make run-api
+```
+
+Or run it with an explicit config file:
+
+```bash
+GOTOOLCHAIN=go1.26.0 go run ./cmd/runtime-api --config config/local/runtime-api.yaml
 ```
 
 Run the shared storage proxy in a second terminal:
@@ -142,12 +154,12 @@ GOTOOLCHAIN=go1.26.0 go run ./cmd/serverless-sidecar
 
 Useful flags:
 
-- `--config` optional manager YAML config path; defaults to built-in values when omitted
+- `--config` optional process YAML config path; defaults to built-in values when omitted
 - `--kubeconfig` optional standard controller-runtime flag
 - zap logging flags such as `--zap-devel`
 - `cmd/runtime-proxy` still accepts `--http-addr` and `--kubeconfig`
 
-Optional serverless queue config now lives under `serverless:` in `config/local/runtime-manager.yaml`:
+Optional serverless queue config now lives under `serverless:` in both split process configs:
 
 ```yaml
 serverless:
@@ -470,7 +482,8 @@ make ci
 
 ## Project layout
 
-- `cmd/main.go`: manager, HTTP server, and async job worker in one process
+- `cmd/controller-manager`: reconciler-only controller process for `GPUUnit` and `GPUStorage`
+- `cmd/runtime-api`: HTTP API, API-owned async job worker, status reporter, and serverless ingress publisher
 - `api/v1alpha1`: `GPUUnit` and `GPUStorage` API schemas
 - `internal/controller`: runtime and storage reconcilers plus workload helper logic
 - `pkg/api`: Echo HTTP handlers and Swagger annotations

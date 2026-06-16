@@ -1,0 +1,11 @@
+httpAddr: ":8080"
+reportInterval: "30s"
+nvidiaMetricsEndpoint: ""
+serverless:
+  url: "nats://nats.messaging.svc.cluster.local:4222"
+  subjectPrefix: "runtime.serverless"
+  streamName: "RUNTIME_SERVERLESS"
+  streamReplicas: 1
+  streamMaxAge: "72h"
+  connectTimeout: "5s"
+  duplicatesWindow: "24h"

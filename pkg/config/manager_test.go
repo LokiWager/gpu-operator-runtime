@@ -93,3 +93,81 @@ func TestLoadManagerConfigLoadsServerlessNetworkPolicyTarget(t *testing.T) {
 		t.Fatalf("expected nats pod label, got %q", got)
 	}
 }
+
+func TestLoadControllerManagerConfigMergesDefaults(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "controller-manager.yaml")
+	content := []byte(
+		"leaderElect: true\n" +
+			"blockedEgressCIDRs:\n" +
+			"  - \"192.168.0.0/16\"\n" +
+			"  - \"10.0.0.0/8\"\n" +
+			"serverlessWorker:\n" +
+			"  image: \"example.com/runtime/sidecar:test\"\n",
+	)
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadControllerManagerConfig(path)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if !cfg.LeaderElect {
+		t.Fatalf("expected leader election to be enabled")
+	}
+	if cfg.MetricsBindAddress != "0" {
+		t.Fatalf("expected default metrics bind address, got %s", cfg.MetricsBindAddress)
+	}
+	if cfg.Serverless.SubjectPrefix != "runtime.serverless" {
+		t.Fatalf("expected default serverless subject prefix, got %s", cfg.Serverless.SubjectPrefix)
+	}
+	if cfg.ServerlessWorker.Image != "example.com/runtime/sidecar:test" {
+		t.Fatalf("expected custom worker sidecar image, got %s", cfg.ServerlessWorker.Image)
+	}
+
+	blockedCIDRs, err := cfg.NormalizedBlockedEgressCIDRs()
+	if err != nil {
+		t.Fatalf("normalize blocked cidrs: %v", err)
+	}
+	if len(blockedCIDRs) != 2 || blockedCIDRs[0] != "10.0.0.0/8" || blockedCIDRs[1] != "192.168.0.0/16" {
+		t.Fatalf("expected sorted controller blocked cidrs, got %+v", blockedCIDRs)
+	}
+}
+
+func TestLoadRuntimeAPIConfigMergesDefaults(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "runtime-api.yaml")
+	content := []byte(
+		"httpAddr: \":9090\"\n" +
+			"reportInterval: \"2m\"\n" +
+			"nvidiaMetricsEndpoint: \"http://dcgm-exporter.runtime-system.svc:9400/metrics\"\n" +
+			"serverless:\n" +
+			"  url: \"nats://nats.messaging.svc.cluster.local:4222\"\n",
+	)
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadRuntimeAPIConfig(path)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.HTTPAddr != ":9090" {
+		t.Fatalf("expected runtime API address :9090, got %s", cfg.HTTPAddr)
+	}
+	if cfg.NvidiaMetricsEndpoint == "" {
+		t.Fatalf("expected nvidia metrics endpoint")
+	}
+	if cfg.Serverless.StreamName != "RUNTIME_SERVERLESS" {
+		t.Fatalf("expected default stream name, got %s", cfg.Serverless.StreamName)
+	}
+
+	interval, err := cfg.ReportIntervalDuration()
+	if err != nil {
+		t.Fatalf("parse interval: %v", err)
+	}
+	if interval.String() != "2m0s" {
+		t.Fatalf("expected 2m interval, got %s", interval)
+	}
+}

@@ -74,6 +74,13 @@ func (p *NATSPublisher) Enabled() bool {
 	return p != nil && p.nc != nil && p.js != nil
 }
 
+// Close releases the underlying NATS connection.
+func (p *NATSPublisher) Close() {
+	if p != nil && p.nc != nil {
+		p.nc.Close()
+	}
+}
+
 // PublishInvocation marshals one invocation contract and publishes it durably through JetStream.
 func (p *NATSPublisher) PublishInvocation(ctx context.Context, msg InvocationMessage) (PublishAck, error) {
 	return p.publishInvocation(ctx, msg)

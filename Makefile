@@ -1,4 +1,5 @@
-APP_NAME := manager
+CONTROLLER_MANAGER_APP_NAME := controller-manager
+RUNTIME_API_APP_NAME := runtime-api
 ACTIVATOR_APP_NAME := activator
 PROXY_APP_NAME := runtime-proxy
 IMAGE_ACCELERATOR_APP_NAME := image-accelerator
@@ -13,14 +14,18 @@ CONTROLLER_TOOLS_VERSION ?= v0.20.1
 SWAG ?= $(LOCALBIN)/swag
 SWAG_VERSION ?= v1.16.4
 
-.PHONY: run build test test-race vet fmt fmt-check tidy manifests generate swagger controller-gen swag ci
+.PHONY: run run-api build test test-race vet fmt fmt-check tidy manifests generate swagger controller-gen swag ci
 
 run:
-	go run ./cmd/main.go --config config/local/runtime-manager.yaml
+	go run ./cmd/controller-manager --config config/local/controller-manager.yaml
+
+run-api:
+	go run ./cmd/runtime-api --config config/local/runtime-api.yaml
 
 build:
 	mkdir -p bin
-	go build -o bin/$(APP_NAME) ./cmd/main.go
+	go build -o bin/$(CONTROLLER_MANAGER_APP_NAME) ./cmd/controller-manager
+	go build -o bin/$(RUNTIME_API_APP_NAME) ./cmd/runtime-api
 	go build -o bin/$(ACTIVATOR_APP_NAME) ./cmd/activator
 	go build -o bin/$(PROXY_APP_NAME) ./cmd/runtime-proxy
 	go build -o bin/$(IMAGE_ACCELERATOR_APP_NAME) ./cmd/image-accelerator
