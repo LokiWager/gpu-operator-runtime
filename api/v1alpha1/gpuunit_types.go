@@ -27,7 +27,6 @@ const (
 
 	ConditionReady = "Ready"
 
-	LifecycleStock    = "stock"
 	LifecycleInstance = "instance"
 
 	ReasonInvalidSpec                 = "InvalidSpec"
@@ -36,8 +35,6 @@ const (
 	ReasonAccessConfigInvalid         = "AccessConfigInvalid"
 	ReasonSSHConfigInvalid            = "SSHConfigInvalid"
 	ReasonServerlessConfigInvalid     = "ServerlessConfigInvalid"
-	ReasonStockNotReady               = "StockNotReady"
-	ReasonStockReady                  = "StockReady"
 	ReasonUnitProgressing             = "UnitProgressing"
 	ReasonUnitReady                   = "UnitReady"
 	ReasonUnitSSHPending              = "UnitSSHPending"
@@ -49,10 +46,9 @@ const (
 	ReasonUnitServiceSyncFailed       = "UnitServiceSyncFailed"
 	ReasonUnitNetworkPolicySyncFailed = "UnitNetworkPolicySyncFailed"
 	ReasonUnitDeploymentSyncFailed    = "UnitDeploymentSyncFailed"
+	ReasonUnitDRAClaimSyncFailed      = "UnitDRAClaimSyncFailed"
 	ReasonStorageMountInvalid         = "StorageMountInvalid"
 	ReasonStorageNotReady             = "StorageNotReady"
-	ReasonStockClaimed                = "StockClaimed"
-	ReasonStockConsumed               = "StockConsumed"
 
 	LabelAppNameKey   = "app.kubernetes.io/name"
 	LabelManagedByKey = "app.kubernetes.io/managed-by"
@@ -77,11 +73,8 @@ const (
 	StatusMessageUnitServerlessReady    = "GPU unit serverless sidecar is ready."
 	StatusMessageUnitServerlessPending  = "Waiting for the GPU unit serverless sidecar to become ready."
 	StatusMessageUnitServerlessDisabled = "GPU unit serverless sidecar is disabled."
-	StatusMessageStockReady             = "Stock unit is ready to be consumed."
-	StatusMessageStockWait              = "Waiting for the stock unit runtime to become ready."
 
 	DefaultRuntimeImage        = "busybox:1.36"
-	StockReservationImage      = DefaultRuntimeImage
 	NVIDIAGPUResourceName      = "nvidia.com/gpu"
 	NVIDIAGPUProductLabelKey   = "nvidia.com/gpu.product"
 	RuntimeWorkerContainerName = "runtime-worker"
@@ -101,6 +94,9 @@ const (
 	ConditionSSHReady        = "SSHReady"
 	ConditionServerlessReady = "ServerlessReady"
 
+	UnitDRAClaimName        = "gpu"
+	UnitDRAClaimRequestName = "gpu"
+
 	ServerlessSidecarContainerName = "serverless-sidecar"
 
 	DefaultServerlessFrameworkSocketDir  = "/tmp/serverless-framework"
@@ -109,16 +105,10 @@ const (
 	DefaultServerlessFrameworkHealthPath = "/healthz"
 
 	GPUUnitNamePrefix        = "unit-"
-	DefaultStockNamespace    = "runtime-stock"
 	DefaultInstanceNamespace = "runtime-instance"
 
-	AnnotationOperationID          = "runtime.lokiwager.io/operation-id"
-	AnnotationRequestHash          = "runtime.lokiwager.io/request-hash"
-	AnnotationStockClaimID         = "runtime.lokiwager.io/stock-claim-id"
-	AnnotationStockReplicas        = "runtime.lokiwager.io/stock-replicas"
-	AnnotationStockOrdinal         = "runtime.lokiwager.io/stock-ordinal"
-	AnnotationSourceStockName      = "runtime.lokiwager.io/source-stock-name"
-	AnnotationSourceStockNamespace = "runtime.lokiwager.io/source-stock-namespace"
+	AnnotationOperationID = "runtime.lokiwager.io/operation-id"
+	AnnotationRequestHash = "runtime.lokiwager.io/request-hash"
 )
 
 // GPUUnitTemplate captures the runtime-facing slice of the pod spec.
@@ -208,13 +198,36 @@ type GPUUnitStorageMount struct {
 	ReadOnly  bool   `json:"readOnly,omitempty"`
 }
 
+// GPUUnitAllocationSpec records the DRA claim that Kubernetes should allocate for this unit.
+type GPUUnitAllocationSpec struct {
+	// DeviceClassName is the DRA DeviceClass used for package-backed allocation.
+	DeviceClassName string `json:"deviceClassName,omitempty" yaml:"deviceClassName,omitempty"`
+	// ClaimName is the controller-owned DRA ResourceClaim name.
+	ClaimName string `json:"claimName,omitempty" yaml:"claimName,omitempty"`
+	// ClaimRequestName is the request name inside the DRA ResourceClaim.
+	ClaimRequestName string `json:"claimRequestName,omitempty" yaml:"claimRequestName,omitempty"`
+	// Count is the exact number of devices requested from the DeviceClass.
+	// +kubebuilder:validation:Minimum=0
+	Count int64 `json:"count,omitempty" yaml:"count,omitempty"`
+	// Capacity contains DRA consumable capacity requests per device, for example memory or cores.
+	Capacity map[string]string `json:"capacity,omitempty" yaml:"capacity,omitempty"`
+	// Selectors contains control-plane managed CEL selectors for DRA devices.
+	Selectors []string `json:"selectors,omitempty" yaml:"selectors,omitempty"`
+}
+
 // GPUUnitSpec defines the desired state of GPUUnit.
 type GPUUnitSpec struct {
+	// PackageID is the control-plane package that was expanded into this runtime contract.
+	PackageID string `json:"packageID,omitempty"`
+
 	// SpecName is the requested runtime flavor, for example "g1.1".
 	SpecName string `json:"specName"`
 
 	// Image is the runtime image used by the unit workload.
 	Image string `json:"image,omitempty"`
+
+	// CPU is the CPU request/limit for the unit workload.
+	CPU string `json:"cpu,omitempty"`
 
 	// Memory is the memory request/limit for the unit workload.
 	Memory string `json:"memory,omitempty"`
@@ -222,6 +235,9 @@ type GPUUnitSpec struct {
 	// GPU is the number of GPUs requested by the unit workload.
 	// +kubebuilder:validation:Minimum=0
 	GPU int32 `json:"gpu,omitempty"`
+
+	// Allocation describes the Kubernetes-native allocation path used for this unit.
+	Allocation GPUUnitAllocationSpec `json:"allocation,omitempty"`
 
 	// Template is the runtime-facing pod slice owned by this unit.
 	Template GPUUnitTemplate `json:"template,omitempty"`
@@ -258,6 +274,23 @@ type GPUUnitServerlessStatus struct {
 	HealthPath      string `json:"healthPath,omitempty"`
 }
 
+// GPUUnitDRADeviceStatus reports one DRA-allocated device from ResourceClaim status.
+type GPUUnitDRADeviceStatus struct {
+	Request          string            `json:"request,omitempty"`
+	Driver           string            `json:"driver,omitempty"`
+	Pool             string            `json:"pool,omitempty"`
+	Device           string            `json:"device,omitempty"`
+	ShareID          string            `json:"shareID,omitempty"`
+	ConsumedCapacity map[string]string `json:"consumedCapacity,omitempty"`
+}
+
+// GPUUnitDRAStatus reports the DRA ResourceClaim observed for one runtime unit.
+type GPUUnitDRAStatus struct {
+	ClaimName string                   `json:"claimName,omitempty"`
+	Allocated bool                     `json:"allocated,omitempty"`
+	Devices   []GPUUnitDRADeviceStatus `json:"devices,omitempty"`
+}
+
 // GPUUnitStatus defines the observed state of GPUUnit.
 type GPUUnitStatus struct {
 	ReadyReplicas      int32                   `json:"readyReplicas,omitempty"`
@@ -268,6 +301,7 @@ type GPUUnitStatus struct {
 	AccessURL          string                  `json:"accessURL,omitempty"`
 	SSH                GPUUnitSSHStatus        `json:"ssh,omitempty"`
 	Serverless         GPUUnitServerlessStatus `json:"serverless,omitempty"`
+	DRA                GPUUnitDRAStatus        `json:"dra,omitempty"`
 	Conditions         []metav1.Condition      `json:"conditions,omitempty"`
 }
 
@@ -279,7 +313,7 @@ type GPUUnitStatus struct {
 // +kubebuilder:printcolumn:name="Access",type=string,JSONPath=`.status.accessURL`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
-// GPUUnit is the schema for one stock or active runtime unit.
+// GPUUnit is the schema for one active runtime unit.
 type GPUUnit struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

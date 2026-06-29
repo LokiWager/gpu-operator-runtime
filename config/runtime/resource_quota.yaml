@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: runtime-instance-quota
+  namespace: runtime-instance
+  labels:
+    app.kubernetes.io/name: gpu-operator-runtime
+spec:
+  hard:
+    requests.cpu: "160"
+    requests.memory: "256Gi"
+    requests.storage: "2Ti"
+    count/resourceclaims.resource.k8s.io: "64"
+    persistentvolumeclaims: "32"
+    services: "128"

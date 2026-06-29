@@ -35,6 +35,7 @@ type unitPodSpecParts struct {
 	Containers     []corev1.Container
 	InitContainers []corev1.Container
 	Volumes        []corev1.Volume
+	ResourceClaims []corev1.PodResourceClaim
 }
 
 type unitSSHSidecarParts struct {
@@ -93,6 +94,7 @@ func desiredUnitPodTemplate(
 			Containers:     parts.Containers,
 			InitContainers: parts.InitContainers,
 			Volumes:        parts.Volumes,
+			ResourceClaims: parts.ResourceClaims,
 		},
 	}, nil
 }
@@ -113,8 +115,9 @@ func desiredUnitPodSpecParts(
 	}
 
 	parts := unitPodSpecParts{
-		Containers: []corev1.Container{runtimeContainer},
-		Volumes:    append(desiredStorageVolumes(storageMounts), sharedMemoryVolume),
+		Containers:     []corev1.Container{runtimeContainer},
+		Volumes:        append(desiredStorageVolumes(storageMounts), sharedMemoryVolume),
+		ResourceClaims: desiredDRAResourceClaims(instance),
 	}
 	if lifecycleForUnit(instance) == runtimev1alpha1.LifecycleInstance && unitServerlessEnabled(instance.Spec.Serverless) {
 		parts.Volumes = append(parts.Volumes, desiredUnitServerlessFrameworkSocketVolume())
@@ -187,25 +190,32 @@ func desiredUnitRuntimeVolumeMounts(storageMounts []resolvedGPUUnitStorageMount)
 
 func desiredUnitRuntimeResources(instance runtimev1alpha1.GPUUnit) (corev1.ResourceRequirements, error) {
 	resources := corev1.ResourceRequirements{}
+	if instance.Spec.CPU != "" {
+		qty, err := resource.ParseQuantity(instance.Spec.CPU)
+		if err != nil {
+			return corev1.ResourceRequirements{}, fmt.Errorf("parse cpu %q: %w", instance.Spec.CPU, err)
+		}
+		resources.Requests = corev1.ResourceList{corev1.ResourceCPU: qty}
+		resources.Limits = corev1.ResourceList{corev1.ResourceCPU: qty}
+	}
 	if instance.Spec.Memory != "" {
 		qty, err := resource.ParseQuantity(instance.Spec.Memory)
 		if err != nil {
 			return corev1.ResourceRequirements{}, fmt.Errorf(parseMemoryErrorFormat, instance.Spec.Memory, err)
 		}
-		resources.Requests = corev1.ResourceList{corev1.ResourceMemory: qty}
-		resources.Limits = corev1.ResourceList{corev1.ResourceMemory: qty}
-	}
-	if instance.Spec.GPU > 0 {
 		if resources.Requests == nil {
 			resources.Requests = corev1.ResourceList{}
 		}
 		if resources.Limits == nil {
 			resources.Limits = corev1.ResourceList{}
 		}
-		gpuQty := *resource.NewQuantity(int64(instance.Spec.GPU), resource.DecimalSI)
-		resources.Requests[corev1.ResourceName(runtimev1alpha1.NVIDIAGPUResourceName)] = gpuQty
-		resources.Limits[corev1.ResourceName(runtimev1alpha1.NVIDIAGPUResourceName)] = gpuQty
+		resources.Requests[corev1.ResourceMemory] = qty
+		resources.Limits[corev1.ResourceMemory] = qty
 	}
+	resources.Claims = []corev1.ResourceClaim{{
+		Name:    runtimev1alpha1.UnitDRAClaimName,
+		Request: unitDRAClaimRequestName(instance),
+	}}
 	return resources, nil
 }
 
@@ -774,11 +784,8 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-// lifecycleForUnit derives whether the controller should treat this unit as stock or active.
+// lifecycleForUnit derives the runtime lifecycle label.
 func lifecycleForUnit(instance runtimev1alpha1.GPUUnit) string {
-	if isStockUnit(instance) {
-		return runtimev1alpha1.LifecycleStock
-	}
 	return runtimev1alpha1.LifecycleInstance
 }
 
@@ -824,9 +831,4 @@ func prefixedRuntimeName(prefix, name string) string {
 		return out
 	}
 	return strings.TrimRight(out[:63], "-")
-}
-
-// isStockUnit reports whether the controller should treat the unit as stock inventory.
-func isStockUnit(instance runtimev1alpha1.GPUUnit) bool {
-	return instance.Namespace == runtimev1alpha1.DefaultStockNamespace
 }

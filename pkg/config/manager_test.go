@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	runtimev1alpha1 "github.com/loki/gpu-operator-runtime/api/v1alpha1"
 	"github.com/loki/gpu-operator-runtime/pkg/serverless"
 )
 
@@ -142,6 +143,15 @@ func TestLoadRuntimeAPIConfigMergesDefaults(t *testing.T) {
 		"httpAddr: \":9090\"\n" +
 			"reportInterval: \"2m\"\n" +
 			"nvidiaMetricsEndpoint: \"http://dcgm-exporter.runtime-system.svc:9400/metrics\"\n" +
+			"packages:\n" +
+			"  - id: \"gpu-rtx3080-2x-cpu10-mem40g\"\n" +
+			"    specName: \"gpu.rtx3080.2x.10c.40g\"\n" +
+			"    cpu: \"10\"\n" +
+			"    memory: \"40Gi\"\n" +
+			"    gpu: 2\n" +
+			"    allocation:\n" +
+			"      deviceClassName: \"nvidia-rtx-3080\"\n" +
+			"      count: 2\n" +
 			"serverless:\n" +
 			"  url: \"nats://nats.messaging.svc.cluster.local:4222\"\n",
 	)
@@ -161,6 +171,16 @@ func TestLoadRuntimeAPIConfigMergesDefaults(t *testing.T) {
 	}
 	if cfg.Serverless.StreamName != "RUNTIME_SERVERLESS" {
 		t.Fatalf("expected default stream name, got %s", cfg.Serverless.StreamName)
+	}
+	packages, err := cfg.Packages.Normalized()
+	if err != nil {
+		t.Fatalf("normalize packages: %v", err)
+	}
+	if len(packages) != 1 || packages[0].ID != "gpu-rtx3080-2x-cpu10-mem40g" {
+		t.Fatalf("expected runtime package to load, got %+v", packages)
+	}
+	if packages[0].Allocation.ClaimRequestName != runtimev1alpha1.UnitDRAClaimRequestName {
+		t.Fatalf("expected default claim request name, got %+v", packages[0].Allocation)
 	}
 
 	interval, err := cfg.ReportIntervalDuration()

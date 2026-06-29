@@ -319,7 +319,7 @@ const docTemplate = `{
         },
         "/gpu-units": {
             "get": {
-                "description": "List active GPU unit resources that were created by consuming stock units.",
+                "description": "List active GPU unit resources in the fixed runtime instance namespace.",
                 "produces": [
                     "application/json"
                 ],
@@ -355,7 +355,7 @@ const docTemplate = `{
                 }
             },
             "post": {
-                "description": "Consume one ready stock unit, keep its reserved resource envelope, and persist an active GPUUnit with the caller's runtime image, template, access settings, and storage mounts. Replays with the same operationID and payload are idempotent.",
+                "description": "Persist an active DRA-backed GPUUnit from a configured packageID, runtime image, template, access settings, and storage mounts. Replays with the same operationID and payload are idempotent.",
                 "consumes": [
                     "application/json"
                 ],
@@ -592,100 +592,21 @@ const docTemplate = `{
                 }
             }
         },
-        "/operator/jobs/{operationID}": {
+        "/operator/inventory": {
             "get": {
-                "description": "Get the current state of an asynchronous stock seeding operation.",
+                "description": "Return the Kubernetes-derived allocation view used by the runtime API: node GPU allocatable, requested GPU from GPUUnit objects, and ResourceQuota status.",
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
                     "operator"
                 ],
-                "summary": "Get operation status",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Operation ID",
-                        "name": "operationID",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
+                "summary": "Get runtime inventory",
                 "responses": {
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/api.OperatorJobResponse"
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "$ref": "#/definitions/api.ErrorResponse"
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "$ref": "#/definitions/api.ErrorResponse"
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "$ref": "#/definitions/api.ErrorResponse"
-                        }
-                    }
-                }
-            }
-        },
-        "/operator/stock-units": {
-            "post": {
-                "description": "Submit an operator request that creates stock GPUUnit objects in the stock namespace using the built-in reservation image. Replays with the same operationID and payload are idempotent.",
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "operator"
-                ],
-                "summary": "Seed stock units",
-                "parameters": [
-                    {
-                        "description": "Create stock units request",
-                        "name": "request",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "$ref": "#/definitions/service.CreateStockUnitsRequest"
-                        }
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/api.OperatorJobResponse"
-                        }
-                    },
-                    "202": {
-                        "description": "Accepted",
-                        "schema": {
-                            "$ref": "#/definitions/api.OperatorJobResponse"
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "$ref": "#/definitions/api.ErrorResponse"
-                        }
-                    },
-                    "409": {
-                        "description": "Conflict",
-                        "schema": {
-                            "$ref": "#/definitions/api.ErrorResponse"
+                            "$ref": "#/definitions/api.InventoryResponse"
                         }
                     },
                     "500": {
@@ -828,11 +749,11 @@ const docTemplate = `{
                 }
             }
         },
-        "api.OperatorJobResponse": {
+        "api.InventoryResponse": {
             "type": "object",
             "properties": {
                 "data": {
-                    "$ref": "#/definitions/domain.OperatorJob"
+                    "$ref": "#/definitions/domain.RuntimeInventoryStatus"
                 }
             }
         },
@@ -850,13 +771,25 @@ const docTemplate = `{
                 "access": {
                     "$ref": "#/definitions/v1alpha1.GPUUnitAccess"
                 },
+                "cpu": {
+                    "type": "string"
+                },
+                "gpu": {
+                    "type": "integer"
+                },
                 "image": {
+                    "type": "string"
+                },
+                "memory": {
                     "type": "string"
                 },
                 "name": {
                     "type": "string"
                 },
                 "operationID": {
+                    "type": "string"
+                },
+                "packageID": {
                     "type": "string"
                 },
                 "serverless": {
@@ -1025,6 +958,15 @@ const docTemplate = `{
                 "accessURL": {
                     "type": "string"
                 },
+                "allocation": {
+                    "$ref": "#/definitions/v1alpha1.GPUUnitAllocationSpec"
+                },
+                "cpu": {
+                    "type": "string"
+                },
+                "draStatus": {
+                    "$ref": "#/definitions/v1alpha1.GPUUnitDRAStatus"
+                },
                 "gpu": {
                     "type": "integer"
                 },
@@ -1052,6 +994,9 @@ const docTemplate = `{
                 "observedGeneration": {
                     "type": "integer"
                 },
+                "packageID": {
+                    "type": "string"
+                },
                 "phase": {
                     "type": "string"
                 },
@@ -1068,12 +1013,6 @@ const docTemplate = `{
                     "$ref": "#/definitions/v1alpha1.GPUUnitServerlessStatus"
                 },
                 "serviceName": {
-                    "type": "string"
-                },
-                "sourceStockName": {
-                    "type": "string"
-                },
-                "sourceStockNamespace": {
                     "type": "string"
                 },
                 "specName": {
@@ -1138,9 +1077,6 @@ const docTemplate = `{
                 "startedAt": {
                     "type": "string"
                 },
-                "stockUnitCount": {
-                    "type": "integer"
-                },
                 "totalGPUAllocatable": {
                     "type": "integer"
                 },
@@ -1158,52 +1094,110 @@ const docTemplate = `{
                 }
             }
         },
-        "domain.OperatorJob": {
+        "domain.RuntimeDRADeviceStatus": {
             "type": "object",
             "properties": {
-                "createdAt": {
+                "claimName": {
                     "type": "string"
                 },
-                "error": {
+                "consumedCapacity": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "string"
+                    }
+                },
+                "device": {
                     "type": "string"
                 },
-                "id": {
+                "driver": {
                     "type": "string"
                 },
-                "objectName": {
+                "namespace": {
                     "type": "string"
                 },
-                "objectNamespace": {
+                "pool": {
                     "type": "string"
                 },
-                "operationID": {
+                "request": {
                     "type": "string"
                 },
-                "status": {
-                    "$ref": "#/definitions/domain.OperatorJobStatus"
-                },
-                "type": {
-                    "type": "string"
-                },
-                "updatedAt": {
+                "shareID": {
                     "type": "string"
                 }
             }
         },
-        "domain.OperatorJobStatus": {
-            "type": "string",
-            "enum": [
-                "pending",
-                "running",
-                "succeeded",
-                "failed"
-            ],
-            "x-enum-varnames": [
-                "OperatorJobPending",
-                "OperatorJobRunning",
-                "OperatorJobSucceeded",
-                "OperatorJobFailed"
-            ]
+        "domain.RuntimeInventoryStatus": {
+            "type": "object",
+            "properties": {
+                "draAllocatedClaims": {
+                    "type": "integer"
+                },
+                "draAllocatedDevices": {
+                    "type": "integer"
+                },
+                "draClaimCount": {
+                    "type": "integer"
+                },
+                "draDevices": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/domain.RuntimeDRADeviceStatus"
+                    }
+                },
+                "draResourceSlices": {
+                    "type": "integer"
+                },
+                "gpuProducts": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/domain.GPUProductHealth"
+                    }
+                },
+                "kubernetesConnected": {
+                    "type": "boolean"
+                },
+                "nodeCount": {
+                    "type": "integer"
+                },
+                "readyNodeCount": {
+                    "type": "integer"
+                },
+                "resourceQuotas": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/domain.RuntimeQuotaStatus"
+                    }
+                },
+                "totalGpuAllocatable": {
+                    "type": "integer"
+                },
+                "totalGpuCapacity": {
+                    "type": "integer"
+                }
+            }
+        },
+        "domain.RuntimeQuotaStatus": {
+            "type": "object",
+            "properties": {
+                "hard": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "string"
+                    }
+                },
+                "name": {
+                    "type": "string"
+                },
+                "namespace": {
+                    "type": "string"
+                },
+                "used": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "string"
+                    }
+                }
+            }
         },
         "domain.ServerlessInvocationAck": {
             "type": "object",
@@ -1267,26 +1261,6 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "storageClassName": {
-                    "type": "string"
-                }
-            }
-        },
-        "service.CreateStockUnitsRequest": {
-            "type": "object",
-            "properties": {
-                "gpu": {
-                    "type": "integer"
-                },
-                "memory": {
-                    "type": "string"
-                },
-                "operationID": {
-                    "type": "string"
-                },
-                "replicas": {
-                    "type": "integer"
-                },
-                "specName": {
                     "type": "string"
                 }
             }
@@ -1390,6 +1364,84 @@ const docTemplate = `{
                 },
                 "scheme": {
                     "type": "string"
+                }
+            }
+        },
+        "v1alpha1.GPUUnitAllocationSpec": {
+            "type": "object",
+            "properties": {
+                "capacity": {
+                    "description": "Capacity contains DRA consumable capacity requests per device, for example memory or cores.",
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "string"
+                    }
+                },
+                "claimName": {
+                    "description": "ClaimName is the controller-owned DRA ResourceClaim name.",
+                    "type": "string"
+                },
+                "claimRequestName": {
+                    "description": "ClaimRequestName is the request name inside the DRA ResourceClaim.",
+                    "type": "string"
+                },
+                "count": {
+                    "description": "Count is the exact number of devices requested from the DeviceClass.\n+kubebuilder:validation:Minimum=0",
+                    "type": "integer"
+                },
+                "deviceClassName": {
+                    "description": "DeviceClassName is the DRA DeviceClass used for package-backed allocation.",
+                    "type": "string"
+                },
+                "selectors": {
+                    "description": "Selectors contains control-plane managed CEL selectors for DRA devices.",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                }
+            }
+        },
+        "v1alpha1.GPUUnitDRADeviceStatus": {
+            "type": "object",
+            "properties": {
+                "consumedCapacity": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "string"
+                    }
+                },
+                "device": {
+                    "type": "string"
+                },
+                "driver": {
+                    "type": "string"
+                },
+                "pool": {
+                    "type": "string"
+                },
+                "request": {
+                    "type": "string"
+                },
+                "shareID": {
+                    "type": "string"
+                }
+            }
+        },
+        "v1alpha1.GPUUnitDRAStatus": {
+            "type": "object",
+            "properties": {
+                "allocated": {
+                    "type": "boolean"
+                },
+                "claimName": {
+                    "type": "string"
+                },
+                "devices": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/v1alpha1.GPUUnitDRADeviceStatus"
+                    }
                 }
             }
         },

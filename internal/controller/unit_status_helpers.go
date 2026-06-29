@@ -45,39 +45,6 @@ type unitReadyStatusDecision struct {
 	Ready conditionDecision
 }
 
-var stockUnitStatusRules = []statusRule[unitReadyStatusInput, unitReadyStatusDecision]{
-	{
-		Match: func(input unitReadyStatusInput) bool {
-			return input.Available >= 1
-		},
-		Build: func(input unitReadyStatusInput) unitReadyStatusDecision {
-			return unitReadyStatusDecision{
-				Phase: runtimev1alpha1.PhaseReady,
-				Ready: conditionDecision{
-					Status:  metav1.ConditionTrue,
-					Reason:  runtimev1alpha1.ReasonStockReady,
-					Message: runtimev1alpha1.StatusMessageStockReady,
-				},
-			}
-		},
-	},
-	{
-		Match: func(input unitReadyStatusInput) bool {
-			return input.FailureMessage != ""
-		},
-		Build: func(input unitReadyStatusInput) unitReadyStatusDecision {
-			return unitReadyStatusDecision{
-				Phase: runtimev1alpha1.PhaseFailed,
-				Ready: conditionDecision{
-					Status:  metav1.ConditionFalse,
-					Reason:  runtimev1alpha1.ReasonPodStartupFailed,
-					Message: input.FailureMessage,
-				},
-			}
-		},
-	},
-}
-
 var instanceUnitStatusRules = []statusRule[unitReadyStatusInput, unitReadyStatusDecision]{
 	{
 		Match: func(input unitReadyStatusInput) bool {
@@ -276,6 +243,7 @@ func buildGPUUnitStatus(
 	storageWaitMessage string,
 	sshProgress unitSSHProgress,
 	serverlessProgress unitServerlessProgress,
+	draStatus runtimev1alpha1.GPUUnitDRAStatus,
 ) runtimev1alpha1.GPUUnitStatus {
 	next := runtimev1alpha1.GPUUnitStatus{
 		ReadyReplicas:      available,
@@ -285,6 +253,7 @@ func buildGPUUnitStatus(
 		AccessURL:          accessURL,
 		SSH:                gpuUnitSSHStatusFromProgress(sshProgress),
 		Serverless:         gpuUnitServerlessStatusFromProgress(serverlessProgress),
+		DRA:                draStatus,
 	}
 
 	input := unitReadyStatusInput{
@@ -299,31 +268,11 @@ func buildGPUUnitStatus(
 	apimeta.SetStatusCondition(&next.Conditions, buildUnitServerlessCondition(instance.Generation, serverlessProgress))
 	next.Phase = decision.Phase
 
-	if lifecycleForUnit(instance) == runtimev1alpha1.LifecycleStock {
-		next.ServiceName = ""
-		next.AccessURL = ""
-		next.SSH = runtimev1alpha1.GPUUnitSSHStatus{}
-		next.Serverless = runtimev1alpha1.GPUUnitServerlessStatus{}
-	}
 	return next
 }
 
 func resolveUnitReadyStatus(instance runtimev1alpha1.GPUUnit, input unitReadyStatusInput) unitReadyStatusDecision {
-	if lifecycleForUnit(instance) == runtimev1alpha1.LifecycleStock {
-		return resolveStatusRule(input, stockUnitStatusRules, defaultStockUnitStatusDecision)
-	}
 	return resolveStatusRule(input, instanceUnitStatusRules, defaultInstanceUnitStatusDecision)
-}
-
-func defaultStockUnitStatusDecision(unitReadyStatusInput) unitReadyStatusDecision {
-	return unitReadyStatusDecision{
-		Phase: runtimev1alpha1.PhaseProgressing,
-		Ready: conditionDecision{
-			Status:  metav1.ConditionFalse,
-			Reason:  runtimev1alpha1.ReasonStockNotReady,
-			Message: runtimev1alpha1.StatusMessageStockWait,
-		},
-	}
 }
 
 func defaultInstanceUnitStatusDecision(unitReadyStatusInput) unitReadyStatusDecision {

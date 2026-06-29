@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/loki/gpu-operator-runtime/pkg/contract"
 	"github.com/loki/gpu-operator-runtime/pkg/serverless"
 	"gopkg.in/yaml.v3"
 )
@@ -49,10 +50,11 @@ type ControllerManagerConfig struct {
 
 // RuntimeAPIConfig captures the HTTP API process settings.
 type RuntimeAPIConfig struct {
-	HTTPAddr              string                `yaml:"httpAddr"`
-	ReportInterval        string                `yaml:"reportInterval"`
-	NvidiaMetricsEndpoint string                `yaml:"nvidiaMetricsEndpoint"`
-	Serverless            serverless.NATSConfig `yaml:"serverless"`
+	HTTPAddr              string                         `yaml:"httpAddr"`
+	ReportInterval        string                         `yaml:"reportInterval"`
+	NvidiaMetricsEndpoint string                         `yaml:"nvidiaMetricsEndpoint"`
+	Serverless            serverless.NATSConfig          `yaml:"serverless"`
+	Packages              contract.RuntimePackageCatalog `yaml:"packages"`
 }
 
 // DefaultManagerConfig returns the baseline local development settings.
@@ -94,6 +96,7 @@ func DefaultRuntimeAPIConfig() RuntimeAPIConfig {
 		ReportInterval:        cfg.ReportInterval,
 		NvidiaMetricsEndpoint: cfg.NvidiaMetricsEndpoint,
 		Serverless:            cfg.Serverless,
+		Packages:              nil,
 	}
 }
 

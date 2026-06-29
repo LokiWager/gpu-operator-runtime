@@ -17,15 +17,14 @@ import (
 	runtimev1alpha1 "github.com/loki/gpu-operator-runtime/api/v1alpha1"
 )
 
-// CreateGPUUnit consumes one ready stock unit and creates an active GPUUnit object.
+// CreateGPUUnit creates one active DRA-backed GPUUnit.
 func (s *Service) CreateGPUUnit(ctx context.Context, req CreateGPUUnitRequest) (domain.GPUUnitRuntime, bool, error) {
-	if s.operator == nil {
-		return domain.GPUUnitRuntime{}, false, &UnavailableError{Message: "operator client is not available"}
-	}
-
-	req, err := contract.NormalizeCreateGPUUnitRequest(req)
+	req, err := contract.NormalizeCreateGPUUnitRequestWithCatalog(req, s.runtimePackageCatalog())
 	if err != nil {
 		return domain.GPUUnitRuntime{}, false, err
+	}
+	if s.operator == nil {
+		return domain.GPUUnitRuntime{}, false, &UnavailableError{Message: "operator client is not available"}
 	}
 
 	requestHash, err := hashGPUUnitCreateRequest(req)
@@ -50,37 +49,27 @@ func (s *Service) CreateGPUUnit(ctx context.Context, req CreateGPUUnitRequest) (
 		return domain.GPUUnitRuntime{}, false, err
 	}
 
-	stock, err := s.claimReadyStockUnit(ctx, req.SpecName, req.OperationID)
-	if err != nil {
+	return s.createDRAAllocatedGPUUnit(ctx, req, requestHash)
+}
+
+func (s *Service) createDRAAllocatedGPUUnit(ctx context.Context, req CreateGPUUnitRequest, requestHash string) (domain.GPUUnitRuntime, bool, error) {
+	if err := s.ensureDRAAllocationAvailable(ctx, req); err != nil {
 		return domain.GPUUnitRuntime{}, false, err
 	}
 
-	originalStock := stock.DeepCopy()
-	active := buildActiveUnitFromStock(*stock, req, requestHash)
-
-	if err := s.operator.Delete(ctx, stock); err != nil {
-		_ = s.releaseStockClaim(ctx, originalStock)
-		return domain.GPUUnitRuntime{}, false, err
-	}
-
+	active := buildActiveUnitFromRequest(req, requestHash)
 	if err := s.operator.Create(ctx, active); err != nil {
-		restore := originalStock.DeepCopy()
-		clearStockClaimAnnotations(restore)
-		_ = s.operator.Create(ctx, restore)
-
 		if apierrors.IsAlreadyExists(err) {
 			var existing runtimev1alpha1.GPUUnit
-			if getErr := s.operator.Get(ctx, types.NamespacedName{Name: req.Name, Namespace: instanceNamespace}, &existing); getErr == nil {
+			if getErr := s.operator.Get(ctx, types.NamespacedName{Name: req.Name, Namespace: runtimev1alpha1.DefaultInstanceNamespace}, &existing); getErr == nil {
 				if existing.GetAnnotations()[runtimev1alpha1.AnnotationOperationID] == req.OperationID &&
-					existing.GetAnnotations()[runtimev1alpha1.AnnotationRequestHash] == requestHash &&
-					isActiveGPUUnit(&existing) {
+					existing.GetAnnotations()[runtimev1alpha1.AnnotationRequestHash] == requestHash {
 					return gpuUnitRuntimeFromObject(&existing), false, nil
 				}
 			}
 		}
 		return domain.GPUUnitRuntime{}, false, err
 	}
-
 	return gpuUnitRuntimeFromObject(active), true, nil
 }
 
@@ -103,9 +92,6 @@ func (s *Service) ListGPUUnits(ctx context.Context, namespace string) ([]domain.
 
 	out := make([]domain.GPUUnitRuntime, 0, len(list.Items))
 	for i := range list.Items {
-		if !isActiveGPUUnit(&list.Items[i]) {
-			continue
-		}
 		out = append(out, gpuUnitRuntimeFromObject(&list.Items[i]))
 	}
 	return out, nil
@@ -208,7 +194,14 @@ func (s *Service) DeleteGPUUnit(ctx context.Context, namespace, name string) err
 
 // hashGPUUnitCreateRequest creates the stable request hash used by create idempotency.
 func hashGPUUnitCreateRequest(req CreateGPUUnitRequest) (string, error) {
-	payload, err := json.Marshal(req)
+	type hashableCreateGPUUnitRequest struct {
+		CreateGPUUnitRequest
+		Allocation runtimev1alpha1.GPUUnitAllocationSpec `json:"allocation,omitempty"`
+	}
+	payload, err := json.Marshal(hashableCreateGPUUnitRequest{
+		CreateGPUUnitRequest: req,
+		Allocation:           req.Allocation,
+	})
 	if err != nil {
 		return "", fmt.Errorf("marshal create gpu unit request: %w", err)
 	}

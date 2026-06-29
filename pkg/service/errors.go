@@ -15,7 +15,7 @@ func (e *ConflictError) Error() string {
 	return e.Message
 }
 
-// CapacityError reports that no matching ready stock is available.
+// CapacityError reports that the requested runtime allocation exceeds available capacity.
 type CapacityError struct {
 	Message string
 }

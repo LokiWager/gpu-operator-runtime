@@ -19,63 +19,46 @@ func gpuUnitRuntimeFromObject(instance *runtimev1alpha1.GPUUnit) domain.GPUUnitR
 	}
 
 	return domain.GPUUnitRuntime{
-		Name:                 instance.Name,
-		Namespace:            instance.Namespace,
-		Lifecycle:            lifecycleForUnit(instance),
-		SpecName:             instance.Spec.SpecName,
-		SourceStockName:      sourceStockNameForUnit(instance),
-		SourceStockNamespace: sourceStockNamespaceForUnit(instance),
-		Image:                instance.Spec.Image,
-		Memory:               instance.Spec.Memory,
-		GPU:                  instance.Spec.GPU,
-		Template:             instance.Spec.Template,
-		Access:               instance.Spec.Access,
-		SSH:                  instance.Spec.SSH,
-		Serverless:           instance.Spec.Serverless,
-		StorageMounts:        append([]runtimev1alpha1.GPUUnitStorageMount(nil), instance.Spec.StorageMounts...),
-		Phase:                instance.Status.Phase,
-		ReadyReplicas:        instance.Status.ReadyReplicas,
-		ObservedGeneration:   instance.Status.ObservedGeneration,
-		LastSyncTime:         instance.Status.LastSyncTime.Time,
-		ServiceName:          instance.Status.ServiceName,
-		AccessURL:            instance.Status.AccessURL,
-		SSHStatus:            instance.Status.SSH,
-		ServerlessStatus:     instance.Status.Serverless,
-		Reason:               reason,
-		Message:              message,
+		Name:               instance.Name,
+		Namespace:          instance.Namespace,
+		Lifecycle:          lifecycleForUnit(instance),
+		PackageID:          instance.Spec.PackageID,
+		SpecName:           instance.Spec.SpecName,
+		Image:              instance.Spec.Image,
+		CPU:                instance.Spec.CPU,
+		Memory:             instance.Spec.Memory,
+		GPU:                instance.Spec.GPU,
+		Allocation:         normalizedUnitAllocation(instance.Spec.Allocation),
+		Template:           instance.Spec.Template,
+		Access:             instance.Spec.Access,
+		SSH:                instance.Spec.SSH,
+		Serverless:         instance.Spec.Serverless,
+		StorageMounts:      append([]runtimev1alpha1.GPUUnitStorageMount(nil), instance.Spec.StorageMounts...),
+		Phase:              instance.Status.Phase,
+		ReadyReplicas:      instance.Status.ReadyReplicas,
+		ObservedGeneration: instance.Status.ObservedGeneration,
+		LastSyncTime:       instance.Status.LastSyncTime.Time,
+		ServiceName:        instance.Status.ServiceName,
+		AccessURL:          instance.Status.AccessURL,
+		SSHStatus:          instance.Status.SSH,
+		ServerlessStatus:   instance.Status.Serverless,
+		DRAStatus:          instance.Status.DRA,
+		Reason:             reason,
+		Message:            message,
 	}
 }
 
-// lifecycleForUnit derives the API lifecycle label from namespace placement.
+func normalizedUnitAllocation(allocation runtimev1alpha1.GPUUnitAllocationSpec) runtimev1alpha1.GPUUnitAllocationSpec {
+	allocation.DeviceClassName = strings.TrimSpace(allocation.DeviceClassName)
+	allocation.ClaimName = strings.TrimSpace(allocation.ClaimName)
+	allocation.ClaimRequestName = strings.TrimSpace(allocation.ClaimRequestName)
+	if allocation.ClaimRequestName == "" {
+		allocation.ClaimRequestName = runtimev1alpha1.UnitDRAClaimRequestName
+	}
+	return allocation
+}
+
+// lifecycleForUnit derives the API lifecycle label.
 func lifecycleForUnit(instance *runtimev1alpha1.GPUUnit) string {
-	if isStockGPUUnit(instance) {
-		return runtimev1alpha1.LifecycleStock
-	}
 	return runtimev1alpha1.LifecycleInstance
-}
-
-// isStockGPUUnit reports whether the object belongs to the stock namespace.
-func isStockGPUUnit(instance *runtimev1alpha1.GPUUnit) bool {
-	return instance != nil && instance.Namespace == runtimev1alpha1.DefaultStockNamespace
-}
-
-// isActiveGPUUnit reports whether the object belongs to an active runtime namespace.
-func isActiveGPUUnit(instance *runtimev1alpha1.GPUUnit) bool {
-	return !isStockGPUUnit(instance)
-}
-
-// sourceStockNameForUnit returns the provenance annotation recorded during handoff.
-func sourceStockNameForUnit(instance *runtimev1alpha1.GPUUnit) string {
-	if instance == nil {
-		return ""
-	}
-	return strings.TrimSpace(instance.GetAnnotations()[runtimev1alpha1.AnnotationSourceStockName])
-}
-
-// sourceStockNamespaceForUnit returns the stock namespace recorded during handoff.
-func sourceStockNamespaceForUnit(instance *runtimev1alpha1.GPUUnit) string {
-	if instance == nil {
-		return ""
-	}
-	return strings.TrimSpace(instance.GetAnnotations()[runtimev1alpha1.AnnotationSourceStockNamespace])
 }

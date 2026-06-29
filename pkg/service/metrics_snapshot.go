@@ -100,7 +100,7 @@ func (s *Service) RuntimeMetricsSnapshot(ctx context.Context) (RuntimeMetricsSna
 	snapshot.AverageGPUUtilizationPercent = nvidiaTelemetry.AverageGPUUtilizationPercent
 	snapshot.GPUDevices = append([]RuntimeGPUDeviceMetrics(nil), nvidiaTelemetry.Devices...)
 
-	unitCounts, _, _, err := s.collectRuntimeUnitPhaseCounts(ctx)
+	unitCounts, _, err := s.collectRuntimeUnitPhaseCounts(ctx)
 	if err != nil {
 		resultErr = errors.Join(resultErr, err)
 	}
@@ -197,32 +197,27 @@ func (s *Service) collectNodeInventory(ctx context.Context) (nodeInventorySnapsh
 	return snapshot, nil
 }
 
-func (s *Service) collectRuntimeUnitPhaseCounts(ctx context.Context) (map[RuntimeUnitPhaseKey]int, int, int, error) {
+func (s *Service) collectRuntimeUnitPhaseCounts(ctx context.Context) (map[RuntimeUnitPhaseKey]int, int, error) {
 	counts := map[RuntimeUnitPhaseKey]int{}
 	if s.operator == nil {
-		return counts, 0, 0, nil
+		return counts, 0, nil
 	}
 
 	var units runtimev1alpha1.GPUUnitList
 	if err := s.operator.List(ctx, &units); err != nil {
-		return counts, 0, 0, err
+		return counts, 0, err
 	}
 
-	stockUnits := 0
 	activeUnits := 0
 	for i := range units.Items {
 		item := &units.Items[i]
 		lifecycle := lifecycleForUnit(item)
 		phase := normalizeMetricsPhase(item.Status.Phase)
 		counts[RuntimeUnitPhaseKey{Lifecycle: lifecycle, Phase: phase}]++
-		if isStockGPUUnit(item) {
-			stockUnits++
-			continue
-		}
 		activeUnits++
 	}
 
-	return counts, stockUnits, activeUnits, nil
+	return counts, activeUnits, nil
 }
 
 func (s *Service) collectStoragePhaseCounts(ctx context.Context) (map[string]int, map[string]int, map[string]int, error) {

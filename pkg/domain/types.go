@@ -15,7 +15,6 @@ type HealthStatus struct {
 	NodeCount                    int                `json:"nodeCount"`
 	ReadyNodeCount               int                `json:"readyNodeCount"`
 	KubeError                    string             `json:"kubeError,omitempty"`
-	StockUnitCount               int                `json:"stockUnitCount"`
 	ActiveUnitCount              int                `json:"activeUnitCount"`
 	TotalGPUCapacity             int64              `json:"totalGPUCapacity"`
 	TotalGPUAllocatable          int64              `json:"totalGPUAllocatable"`
@@ -37,55 +36,70 @@ type GPUProductHealth struct {
 	Allocatable int64  `json:"allocatable"`
 }
 
-// OperatorJobStatus is the state of an asynchronous operator-side workflow.
-type OperatorJobStatus string
+// RuntimeInventoryStatus is the API-facing allocation view derived from Kubernetes state.
+type RuntimeInventoryStatus struct {
+	KubernetesConnected bool                     `json:"kubernetesConnected"`
+	NodeCount           int                      `json:"nodeCount"`
+	ReadyNodeCount      int                      `json:"readyNodeCount"`
+	TotalGPUCapacity    int64                    `json:"totalGpuCapacity"`
+	TotalGPUAllocatable int64                    `json:"totalGpuAllocatable"`
+	DRAClaimCount       int                      `json:"draClaimCount"`
+	DRAAllocatedClaims  int                      `json:"draAllocatedClaims"`
+	DRAAllocatedDevices int                      `json:"draAllocatedDevices"`
+	DRAResourceSlices   int                      `json:"draResourceSlices"`
+	DRADevices          []RuntimeDRADeviceStatus `json:"draDevices,omitempty"`
+	GPUProducts         []GPUProductHealth       `json:"gpuProducts,omitempty"`
+	ResourceQuotas      []RuntimeQuotaStatus     `json:"resourceQuotas,omitempty"`
+}
 
-const (
-	OperatorJobPending   OperatorJobStatus = "pending"
-	OperatorJobRunning   OperatorJobStatus = "running"
-	OperatorJobSucceeded OperatorJobStatus = "succeeded"
-	OperatorJobFailed    OperatorJobStatus = "failed"
-)
+// RuntimeQuotaStatus summarizes ResourceQuota hard/used values relevant to runtime allocation.
+type RuntimeQuotaStatus struct {
+	Name      string            `json:"name"`
+	Namespace string            `json:"namespace"`
+	Hard      map[string]string `json:"hard,omitempty"`
+	Used      map[string]string `json:"used,omitempty"`
+}
 
-// OperatorJob describes one asynchronous stock seeding request.
-type OperatorJob struct {
-	ID              string            `json:"id"`
-	OperationID     string            `json:"operationID"`
-	Type            string            `json:"type"`
-	Status          OperatorJobStatus `json:"status"`
-	Error           string            `json:"error,omitempty"`
-	ObjectName      string            `json:"objectName,omitempty"`
-	ObjectNamespace string            `json:"objectNamespace,omitempty"`
-	CreatedAt       time.Time         `json:"createdAt"`
-	UpdatedAt       time.Time         `json:"updatedAt"`
+// RuntimeDRADeviceStatus summarizes one observed DRA allocation from ResourceClaim.status.
+type RuntimeDRADeviceStatus struct {
+	ClaimName        string            `json:"claimName"`
+	Namespace        string            `json:"namespace"`
+	Request          string            `json:"request,omitempty"`
+	Driver           string            `json:"driver,omitempty"`
+	Pool             string            `json:"pool,omitempty"`
+	Device           string            `json:"device,omitempty"`
+	ShareID          string            `json:"shareID,omitempty"`
+	ConsumedCapacity map[string]string `json:"consumedCapacity,omitempty"`
 }
 
 // GPUUnitRuntime is the API-facing runtime view of a GPUUnit object.
 type GPUUnitRuntime struct {
-	Name                 string                                  `json:"name"`
-	Namespace            string                                  `json:"namespace"`
-	Lifecycle            string                                  `json:"lifecycle"`
-	SpecName             string                                  `json:"specName"`
-	SourceStockName      string                                  `json:"sourceStockName,omitempty"`
-	SourceStockNamespace string                                  `json:"sourceStockNamespace,omitempty"`
-	Image                string                                  `json:"image,omitempty"`
-	Memory               string                                  `json:"memory,omitempty"`
-	GPU                  int32                                   `json:"gpu,omitempty"`
-	Template             runtimev1alpha1.GPUUnitTemplate         `json:"template,omitempty"`
-	Access               runtimev1alpha1.GPUUnitAccess           `json:"access,omitempty"`
-	SSH                  runtimev1alpha1.GPUUnitSSHSpec          `json:"ssh,omitempty"`
-	Serverless           runtimev1alpha1.GPUUnitServerlessSpec   `json:"serverless,omitempty"`
-	StorageMounts        []runtimev1alpha1.GPUUnitStorageMount   `json:"storageMounts,omitempty"`
-	Phase                string                                  `json:"phase"`
-	ReadyReplicas        int32                                   `json:"readyReplicas"`
-	ObservedGeneration   int64                                   `json:"observedGeneration"`
-	LastSyncTime         time.Time                               `json:"lastSyncTime,omitempty"`
-	ServiceName          string                                  `json:"serviceName,omitempty"`
-	AccessURL            string                                  `json:"accessURL,omitempty"`
-	SSHStatus            runtimev1alpha1.GPUUnitSSHStatus        `json:"sshStatus,omitempty"`
-	ServerlessStatus     runtimev1alpha1.GPUUnitServerlessStatus `json:"serverlessStatus,omitempty"`
-	Reason               string                                  `json:"reason,omitempty"`
-	Message              string                                  `json:"message,omitempty"`
+	Name               string                                  `json:"name"`
+	Namespace          string                                  `json:"namespace"`
+	Lifecycle          string                                  `json:"lifecycle"`
+	PackageID          string                                  `json:"packageID,omitempty"`
+	SpecName           string                                  `json:"specName"`
+	Image              string                                  `json:"image,omitempty"`
+	CPU                string                                  `json:"cpu,omitempty"`
+	Memory             string                                  `json:"memory,omitempty"`
+	GPU                int32                                   `json:"gpu,omitempty"`
+	Allocation         runtimev1alpha1.GPUUnitAllocationSpec   `json:"allocation,omitempty"`
+	Template           runtimev1alpha1.GPUUnitTemplate         `json:"template,omitempty"`
+	Access             runtimev1alpha1.GPUUnitAccess           `json:"access,omitempty"`
+	SSH                runtimev1alpha1.GPUUnitSSHSpec          `json:"ssh,omitempty"`
+	Serverless         runtimev1alpha1.GPUUnitServerlessSpec   `json:"serverless,omitempty"`
+	StorageMounts      []runtimev1alpha1.GPUUnitStorageMount   `json:"storageMounts,omitempty"`
+	Phase              string                                  `json:"phase"`
+	ReadyReplicas      int32                                   `json:"readyReplicas"`
+	ObservedGeneration int64                                   `json:"observedGeneration"`
+	LastSyncTime       time.Time                               `json:"lastSyncTime,omitempty"`
+	ServiceName        string                                  `json:"serviceName,omitempty"`
+	AccessURL          string                                  `json:"accessURL,omitempty"`
+	SSHStatus          runtimev1alpha1.GPUUnitSSHStatus        `json:"sshStatus,omitempty"`
+	ServerlessStatus   runtimev1alpha1.GPUUnitServerlessStatus `json:"serverlessStatus,omitempty"`
+	DRAStatus          runtimev1alpha1.GPUUnitDRAStatus        `json:"draStatus,omitempty"`
+	Reason             string                                  `json:"reason,omitempty"`
+	Message            string                                  `json:"message,omitempty"`
 }
 
 // ServerlessInvocationAck is the API-facing acknowledgement for one queued serverless invocation.

@@ -381,9 +381,6 @@ func (s *Service) storageMountIndex(ctx context.Context, namespace string) (map[
 	index := map[string][]string{}
 	for i := range units.Items {
 		unit := &units.Items[i]
-		if !isActiveGPUUnit(unit) {
-			continue
-		}
 		for _, mount := range unit.Spec.StorageMounts {
 			key := storageIndexKey(unit.Namespace, mount.Name)
 			index[key] = append(index[key], unit.Name)

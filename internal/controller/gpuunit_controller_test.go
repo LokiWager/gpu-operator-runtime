@@ -9,6 +9,7 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	resourcev1 "k8s.io/api/resource/v1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -38,6 +39,9 @@ func newControllerScheme(t *testing.T) *runtime.Scheme {
 	if err := networkingv1.AddToScheme(scheme); err != nil {
 		t.Fatalf("add networking scheme error: %v", err)
 	}
+	if err := resourcev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add resource scheme error: %v", err)
+	}
 	if err := runtimev1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatalf("add runtime scheme error: %v", err)
 	}
@@ -58,76 +62,11 @@ func newGPUUnitReconciler(cl ctrlclient.Client, scheme *runtime.Scheme) *GPUUnit
 	}
 }
 
-func TestReconcileStockGPUUnitCreatesDeploymentWithoutService(t *testing.T) {
-	scheme := newControllerScheme(t)
-
-	instance := &runtimev1alpha1.GPUUnit{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: runtimev1alpha1.GroupVersion.String(),
-			Kind:       "GPUUnit",
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "stock-pool-a-1",
-			Namespace: runtimev1alpha1.DefaultStockNamespace,
-		},
-		Spec: runtimev1alpha1.GPUUnitSpec{
-			SpecName: "g1.1",
-			Image:    "python:3.12",
-			Memory:   "16Gi",
-			GPU:      1,
-			Template: runtimev1alpha1.GPUUnitTemplate{
-				Command: []string{"python"},
-				Args:    []string{"-m", "http.server", "8080"},
-				Ports: []runtimev1alpha1.GPUUnitPortSpec{{
-					Name: "http",
-					Port: 8080,
-				}},
-			},
-		},
-	}
-
-	cl := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithStatusSubresource(&runtimev1alpha1.GPUUnit{}).
-		WithObjects(instance).
-		Build()
-
-	reconciler := newGPUUnitReconciler(cl, scheme)
-	_, err := reconciler.Reconcile(context.Background(), ctrl.Request{
-		NamespacedName: types.NamespacedName{Namespace: instance.Namespace, Name: instance.Name},
-	})
-	if err != nil {
-		t.Fatalf("reconcile error: %v", err)
-	}
-
-	var dep appsv1.Deployment
-	if err := cl.Get(context.Background(), types.NamespacedName{Namespace: instance.Namespace, Name: deploymentNameForUnit(instance.Name)}, &dep); err != nil {
-		t.Fatalf("deployment should be created: %v", err)
-	}
-	container := dep.Spec.Template.Spec.Containers[0]
-	if container.Image != "python:3.12" {
-		t.Fatalf("expected stock image to be applied, got %s", container.Image)
-	}
-
-	var svc corev1.Service
-	err = cl.Get(context.Background(), types.NamespacedName{Namespace: instance.Namespace, Name: serviceNameForUnit(instance.Name)}, &svc)
-	if err == nil {
-		t.Fatalf("stock unit should not have a service")
-	}
-
-	var got runtimev1alpha1.GPUUnit
-	if err := cl.Get(context.Background(), types.NamespacedName{Namespace: instance.Namespace, Name: instance.Name}, &got); err != nil {
-		t.Fatalf("get gpu unit error: %v", err)
-	}
-	if got.Status.Phase != runtimev1alpha1.PhaseProgressing {
-		t.Fatalf("expected phase=%s, got %s", runtimev1alpha1.PhaseProgressing, got.Status.Phase)
-	}
-	if got.Status.ServiceName != "" || got.Status.AccessURL != "" {
-		t.Fatalf("stock unit should not publish service details")
-	}
-	cond := apimeta.FindStatusCondition(got.Status.Conditions, runtimev1alpha1.ConditionReady)
-	if cond == nil || cond.Reason != runtimev1alpha1.ReasonStockNotReady {
-		t.Fatalf("expected stock ready condition, got %+v", cond)
+func testDRAAllocation(count int64) runtimev1alpha1.GPUUnitAllocationSpec {
+	return runtimev1alpha1.GPUUnitAllocationSpec{
+		DeviceClassName:  "nvidia-rtx-3080",
+		ClaimRequestName: runtimev1alpha1.UnitDRAClaimRequestName,
+		Count:            count,
 	}
 }
 
@@ -144,10 +83,11 @@ func TestReconcileInstanceGPUUnitCreatesDeploymentAndService(t *testing.T) {
 			Namespace: runtimev1alpha1.DefaultInstanceNamespace,
 		},
 		Spec: runtimev1alpha1.GPUUnitSpec{
-			SpecName: "g1.1",
-			Image:    "python:3.12",
-			Memory:   "16Gi",
-			GPU:      1,
+			SpecName:   "g1.1",
+			Image:      "python:3.12",
+			Memory:     "16Gi",
+			GPU:        1,
+			Allocation: testDRAAllocation(1),
 			Template: runtimev1alpha1.GPUUnitTemplate{
 				Command: []string{"python"},
 				Args:    []string{"-m", "http.server", "8080"},
@@ -281,6 +221,96 @@ func TestReconcileInstanceGPUUnitCreatesDeploymentAndService(t *testing.T) {
 	}
 }
 
+func TestReconcileInstanceGPUUnitCreatesDRAClaimAndClaimBackedPod(t *testing.T) {
+	scheme := newControllerScheme(t)
+
+	instance := &runtimev1alpha1.GPUUnit{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: runtimev1alpha1.GroupVersion.String(),
+			Kind:       "GPUUnit",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "demo-dra",
+			Namespace: runtimev1alpha1.DefaultInstanceNamespace,
+		},
+		Spec: runtimev1alpha1.GPUUnitSpec{
+			PackageID: "gpu-rtx3080-2x-cpu10-mem40g",
+			SpecName:  "gpu.rtx3080.2x.10c.40g",
+			Image:     "pytorch:2.6",
+			CPU:       "10",
+			Memory:    "40Gi",
+			GPU:       2,
+			Allocation: runtimev1alpha1.GPUUnitAllocationSpec{
+				DeviceClassName:  "nvidia-rtx-3080",
+				ClaimName:        "unit-demo-dra-gpu",
+				ClaimRequestName: runtimev1alpha1.UnitDRAClaimRequestName,
+				Count:            2,
+			},
+		},
+	}
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&runtimev1alpha1.GPUUnit{}).
+		WithStatusSubresource(&resourcev1.ResourceClaim{}).
+		WithObjects(instance).
+		Build()
+
+	reconciler := newGPUUnitReconciler(cl, scheme)
+	_, err := reconciler.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: instance.Namespace, Name: instance.Name},
+	})
+	if err != nil {
+		t.Fatalf("reconcile error: %v", err)
+	}
+
+	var claim resourcev1.ResourceClaim
+	if err := cl.Get(context.Background(), types.NamespacedName{Namespace: instance.Namespace, Name: "unit-demo-dra-gpu"}, &claim); err != nil {
+		t.Fatalf("resource claim should be created: %v", err)
+	}
+	if len(claim.Spec.Devices.Requests) != 1 {
+		t.Fatalf("expected one DRA request, got %+v", claim.Spec.Devices.Requests)
+	}
+	request := claim.Spec.Devices.Requests[0]
+	if request.Name != runtimev1alpha1.UnitDRAClaimRequestName || request.Exactly == nil {
+		t.Fatalf("expected exact gpu request, got %+v", request)
+	}
+	if request.Exactly.DeviceClassName != "nvidia-rtx-3080" || request.Exactly.Count != 2 {
+		t.Fatalf("expected DRA device class/count, got %+v", request.Exactly)
+	}
+
+	var dep appsv1.Deployment
+	if err := cl.Get(context.Background(), types.NamespacedName{Namespace: instance.Namespace, Name: deploymentNameForUnit(instance.Name)}, &dep); err != nil {
+		t.Fatalf("deployment should be created: %v", err)
+	}
+	if len(dep.Spec.Template.Spec.ResourceClaims) != 1 {
+		t.Fatalf("expected pod resource claim, got %+v", dep.Spec.Template.Spec.ResourceClaims)
+	}
+	podClaim := dep.Spec.Template.Spec.ResourceClaims[0]
+	if podClaim.Name != runtimev1alpha1.UnitDRAClaimName || podClaim.ResourceClaimName == nil || *podClaim.ResourceClaimName != "unit-demo-dra-gpu" {
+		t.Fatalf("unexpected pod resource claim %+v", podClaim)
+	}
+	runtimeContainer := dep.Spec.Template.Spec.Containers[0]
+	if len(runtimeContainer.Resources.Claims) != 1 {
+		t.Fatalf("expected runtime container claim reference, got %+v", runtimeContainer.Resources.Claims)
+	}
+	containerClaim := runtimeContainer.Resources.Claims[0]
+	if containerClaim.Name != runtimev1alpha1.UnitDRAClaimName || containerClaim.Request != runtimev1alpha1.UnitDRAClaimRequestName {
+		t.Fatalf("unexpected runtime container claim %+v", containerClaim)
+	}
+	if _, ok := runtimeContainer.Resources.Requests[corev1.ResourceName(runtimev1alpha1.NVIDIAGPUResourceName)]; ok {
+		t.Fatalf("DRA mode must not keep traditional gpu resource requests: %+v", runtimeContainer.Resources.Requests)
+	}
+	cpuRequest := runtimeContainer.Resources.Requests[corev1.ResourceCPU]
+	if cpuRequest.String() != "10" {
+		t.Fatalf("expected cpu request 10, got %+v", runtimeContainer.Resources.Requests)
+	}
+	memoryRequest := runtimeContainer.Resources.Requests[corev1.ResourceMemory]
+	if memoryRequest.String() != "40Gi" {
+		t.Fatalf("expected memory request 40Gi, got %+v", runtimeContainer.Resources.Requests)
+	}
+}
+
 func TestReconcileInstanceGPUUnitMountsReadyStorage(t *testing.T) {
 	scheme := newControllerScheme(t)
 
@@ -294,9 +324,11 @@ func TestReconcileInstanceGPUUnitMountsReadyStorage(t *testing.T) {
 			Namespace: runtimev1alpha1.DefaultInstanceNamespace,
 		},
 		Spec: runtimev1alpha1.GPUUnitSpec{
-			SpecName: "g1.1",
-			Image:    "python:3.12",
-			Memory:   "16Gi",
+			SpecName:   "g1.1",
+			Image:      "python:3.12",
+			Memory:     "16Gi",
+			GPU:        1,
+			Allocation: testDRAAllocation(1),
 			Template: runtimev1alpha1.GPUUnitTemplate{
 				Ports: []runtimev1alpha1.GPUUnitPortSpec{{
 					Name: "http",
@@ -381,10 +413,11 @@ func TestReconcileInstanceGPUUnitAddsSSHSidecarsAndStatus(t *testing.T) {
 			Namespace: runtimev1alpha1.DefaultInstanceNamespace,
 		},
 		Spec: runtimev1alpha1.GPUUnitSpec{
-			SpecName: "g1.1",
-			Image:    "python:3.12",
-			Memory:   "16Gi",
-			GPU:      1,
+			SpecName:   "g1.1",
+			Image:      "python:3.12",
+			Memory:     "16Gi",
+			GPU:        1,
+			Allocation: testDRAAllocation(1),
 			Template: runtimev1alpha1.GPUUnitTemplate{
 				Ports: []runtimev1alpha1.GPUUnitPortSpec{{
 					Name: "http",
@@ -525,9 +558,11 @@ func TestReconcileInstanceGPUUnitPendingStorageMarksStatusWaiting(t *testing.T) 
 			Namespace: runtimev1alpha1.DefaultInstanceNamespace,
 		},
 		Spec: runtimev1alpha1.GPUUnitSpec{
-			SpecName: "g1.1",
-			Image:    "python:3.12",
-			Memory:   "16Gi",
+			SpecName:   "g1.1",
+			Image:      "python:3.12",
+			Memory:     "16Gi",
+			GPU:        1,
+			Allocation: testDRAAllocation(1),
 			StorageMounts: []runtimev1alpha1.GPUUnitStorageMount{{
 				Name:      "model-cache",
 				MountPath: "/data",
@@ -588,9 +623,11 @@ func TestReconcileGPUUnitInvalidAccessMarksStatusFailed(t *testing.T) {
 			Namespace: runtimev1alpha1.DefaultInstanceNamespace,
 		},
 		Spec: runtimev1alpha1.GPUUnitSpec{
-			SpecName: "g1.1",
-			Image:    "python:3.12",
-			Memory:   "16Gi",
+			SpecName:   "g1.1",
+			Image:      "python:3.12",
+			Memory:     "16Gi",
+			GPU:        1,
+			Allocation: testDRAAllocation(1),
 			Template: runtimev1alpha1.GPUUnitTemplate{
 				Ports: []runtimev1alpha1.GPUUnitPortSpec{{
 					Name: "http",
@@ -630,90 +667,6 @@ func TestReconcileGPUUnitInvalidAccessMarksStatusFailed(t *testing.T) {
 	}
 }
 
-func TestReconcileStockGPUUnitPodFailureMarksStatusFailed(t *testing.T) {
-	scheme := newControllerScheme(t)
-
-	instance := &runtimev1alpha1.GPUUnit{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: runtimev1alpha1.GroupVersion.String(),
-			Kind:       "GPUUnit",
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "stock-pool-a-1",
-			Namespace: runtimev1alpha1.DefaultStockNamespace,
-		},
-		Spec: runtimev1alpha1.GPUUnitSpec{
-			SpecName: "g1.1",
-			Image:    "python:3.12",
-			Memory:   "16Gi",
-		},
-	}
-
-	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "stock-pool-a-1-abc123",
-			Namespace: instance.Namespace,
-			Labels: map[string]string{
-				runtimev1alpha1.LabelUnitKey: instance.Name,
-			},
-		},
-		Status: corev1.PodStatus{
-			ContainerStatuses: []corev1.ContainerStatus{{
-				Name: runtimev1alpha1.RuntimeWorkerContainerName,
-				State: corev1.ContainerState{
-					Waiting: &corev1.ContainerStateWaiting{
-						Reason:  "CrashLoopBackOff",
-						Message: "back-off restarting failed container",
-					},
-				},
-				LastTerminationState: corev1.ContainerState{
-					Terminated: &corev1.ContainerStateTerminated{
-						ExitCode: 1,
-						Message:  "model initialization failed: missing weights",
-					},
-				},
-			}},
-		},
-	}
-
-	cl := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithStatusSubresource(&runtimev1alpha1.GPUUnit{}).
-		WithObjects(instance, pod).
-		Build()
-
-	reconciler := newGPUUnitReconciler(cl, scheme)
-	_, err := reconciler.Reconcile(context.Background(), ctrl.Request{
-		NamespacedName: types.NamespacedName{Namespace: instance.Namespace, Name: instance.Name},
-	})
-	if err != nil {
-		t.Fatalf("reconcile error: %v", err)
-	}
-
-	var got runtimev1alpha1.GPUUnit
-	if err := cl.Get(context.Background(), types.NamespacedName{Namespace: instance.Namespace, Name: instance.Name}, &got); err != nil {
-		t.Fatalf("get gpu unit error: %v", err)
-	}
-	if got.Status.Phase != runtimev1alpha1.PhaseFailed {
-		t.Fatalf("expected phase=%s, got %s", runtimev1alpha1.PhaseFailed, got.Status.Phase)
-	}
-	if got.Status.ServiceName != "" || got.Status.AccessURL != "" {
-		t.Fatalf("stock failure should not leak service details")
-	}
-
-	cond := apimeta.FindStatusCondition(got.Status.Conditions, runtimev1alpha1.ConditionReady)
-	if cond == nil {
-		t.Fatalf("expected ready condition to be set")
-	}
-	if cond.Reason != runtimev1alpha1.ReasonPodStartupFailed {
-		t.Fatalf("expected reason=%s, got %s", runtimev1alpha1.ReasonPodStartupFailed, cond.Reason)
-	}
-	expected := "Pod stock-pool-a-1-abc123 container runtime-worker: model initialization failed: missing weights"
-	if cond.Message != expected {
-		t.Fatalf("unexpected pod failure message: %s", cond.Message)
-	}
-}
-
 func TestReconcileInstanceGPUUnitInitSidecarFailureMarksStatusFailed(t *testing.T) {
 	scheme := newControllerScheme(t)
 
@@ -727,8 +680,11 @@ func TestReconcileInstanceGPUUnitInitSidecarFailureMarksStatusFailed(t *testing.
 			Namespace: runtimev1alpha1.DefaultInstanceNamespace,
 		},
 		Spec: runtimev1alpha1.GPUUnitSpec{
-			SpecName: "g1.1",
-			Image:    "python:3.12",
+			SpecName:   "g1.1",
+			Image:      "python:3.12",
+			Memory:     "16Gi",
+			GPU:        1,
+			Allocation: testDRAAllocation(1),
 			SSH: runtimev1alpha1.GPUUnitSSHSpec{
 				Enabled:        true,
 				Username:       "runtime",
@@ -820,10 +776,11 @@ func TestReconcileInstanceGPUUnitInjectsServerlessSidecar(t *testing.T) {
 			Namespace: runtimev1alpha1.DefaultInstanceNamespace,
 		},
 		Spec: runtimev1alpha1.GPUUnitSpec{
-			SpecName: "g1.1",
-			Image:    "python:3.12",
-			Memory:   "16Gi",
-			GPU:      1,
+			SpecName:   "g1.1",
+			Image:      "python:3.12",
+			Memory:     "16Gi",
+			GPU:        1,
+			Allocation: testDRAAllocation(1),
 			Template: runtimev1alpha1.GPUUnitTemplate{
 				Ports: []runtimev1alpha1.GPUUnitPortSpec{{
 					Name: "http",
@@ -955,10 +912,11 @@ func TestReconcileInstanceGPUUnitFailsWithoutClusterNATSTarget(t *testing.T) {
 			Namespace: runtimev1alpha1.DefaultInstanceNamespace,
 		},
 		Spec: runtimev1alpha1.GPUUnitSpec{
-			SpecName: "g1.1",
-			Image:    "python:3.12",
-			Memory:   "16Gi",
-			GPU:      1,
+			SpecName:   "g1.1",
+			Image:      "python:3.12",
+			Memory:     "16Gi",
+			GPU:        1,
+			Allocation: testDRAAllocation(1),
 			Serverless: runtimev1alpha1.GPUUnitServerlessSpec{
 				RequestID: "sd-webui",
 			},

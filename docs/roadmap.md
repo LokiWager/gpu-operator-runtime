@@ -4,11 +4,11 @@
 
 1. Environment bootstrap and minimal runtime skeleton
 2. Minimal Operator skeleton (CRD + reconcile + status)
-3. Stock-based fast start simulation
+3. Inventory-based fast start simulation
 4. VM lifecycle and state machine
 5. Scheduling and resource orchestration
 6. API contracts and idempotency
-7. Single GPUUnit model and stock handoff
+7. Single GPUUnit model and handoff semantics
 8. Storage architecture I (PVC-backed storage resources)
 9. Storage architecture II (accessors, data jobs, and recovery)
 10. Shared proxy access and SSH entrypoints
@@ -20,45 +20,26 @@
 16. Worker lifecycle management (prewarm, idle scale-down, and metrics-driven worker state)
 17. ScyllaDB-backed invocation result store, Kubernetes ScyllaDB stack, and control-plane result consumer
 18. Split runtime control plane with separate controller-manager and runtime-api processes
+19. DRA-backed package allocation with ResourceClaim status as the allocation source of truth
 
 ## Planned Chapters
 
-### 19. Kubernetes-Native Inventory and Allocation
-
-Goal: replace the empty-Pod stock placeholder with Kubernetes-native resource allocation primitives.
-
-Code scope:
-
-- Stop treating an empty Pod as the source of truth for GPU stock.
-- Use Kubernetes extended resources for whole-GPU allocation through `nvidia.com/gpu`.
-- Use `ResourceQuota` as the namespace or tenant guardrail for aggregate GPU, CPU, memory, storage, and object-count limits.
-- Introduce a runtime allocation view that reads Kubernetes state instead of inventing a separate scheduler.
-- Add a DRA-ready abstraction that can map future product specs to `DeviceClass`, `ResourceClaim`, and `ResourceSlice` when the cluster supports Dynamic Resource Allocation.
-- Keep runtime responsible for product-level validation, status visibility, and audit hooks, while Kubernetes remains the final allocator.
-
-Blog focus:
-
-- Why empty Pod stock is inaccurate and operationally awkward.
-- What Kubernetes already gives us: Device Plugin extended resources, scheduler placement, ResourceQuota, and DRA.
-- Why the runtime should not compete with kube-scheduler.
-- The boundary between product inventory visibility and actual Kubernetes allocation.
-
-### 20. GPU Virtualization with HAMi
+### 20. GPU Virtualization with HAMi on top of DRA
 
 Goal: support fractional or virtual GPU requests for workloads that do not need an entire physical GPU.
 
 Code scope:
 
-- Extend `GPUUnit` spec to express vGPU requirements such as GPU count, GPU memory, and optional GPU core percentage.
-- Add a HAMi runtime mode that renders the appropriate resource requests, limits, scheduler name, and annotations.
+- Add a HAMi package/provider path that maps product packages to HAMi-compatible DRA `DeviceClass` and capacity semantics.
+- Extend the package catalog to express vGPU requirements such as GPU memory and optional GPU core percentage without exposing raw user selectors.
 - Add examples for shared inference workloads that request GPU memory instead of a full card.
-- Surface vGPU allocation information in status when available.
-- Keep HAMi integration optional so whole-GPU clusters can continue using standard device plugin resources.
+- Surface vGPU allocation information from `ResourceClaim.status.devices[*].consumedCapacity` when available.
+- Keep HAMi integration optional so whole-GPU DRA clusters can continue using standard DRA device classes.
 
 Blog focus:
 
 - Why whole-GPU allocation wastes capacity for many inference and notebook workloads.
-- How HAMi complements Kubernetes Device Plugin and DRA rather than replacing the whole platform.
+- Why HAMi does not conflict with DRA in this platform model: DRA is the Kubernetes allocation contract, HAMi is the GPU sharing provider underneath that contract.
 - What HAMi owns: fine-grained GPU scheduling, device allocation, and in-container isolation.
 - What the runtime owns: product contract, API validation, status, and tenant-facing semantics.
 

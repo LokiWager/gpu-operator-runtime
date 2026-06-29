@@ -6,11 +6,28 @@ import (
 	runtimev1alpha1 "github.com/loki/gpu-operator-runtime/api/v1alpha1"
 )
 
+const testPackageRTX3080Pair = "gpu-rtx3080-2x-cpu10-mem40g"
+
+func testRuntimePackageCatalog() RuntimePackageCatalog {
+	return RuntimePackageCatalog{{
+		ID:       testPackageRTX3080Pair,
+		SpecName: "gpu.rtx3080.2x.10c.40g",
+		CPU:      "10",
+		Memory:   "40Gi",
+		GPU:      2,
+		Allocation: runtimev1alpha1.GPUUnitAllocationSpec{
+			DeviceClassName:  "nvidia-rtx-3080",
+			ClaimRequestName: runtimev1alpha1.UnitDRAClaimRequestName,
+			Count:            2,
+		},
+	}}
+}
+
 func TestNormalizeCreateGPUUnitRequest_AppliesDefaults(t *testing.T) {
-	req, err := NormalizeCreateGPUUnitRequest(CreateGPUUnitRequest{
+	req, err := NormalizeCreateGPUUnitRequestWithCatalog(CreateGPUUnitRequest{
 		OperationID: "gpu-op-1",
 		Name:        "Demo-Instance",
-		SpecName:    "g1.1",
+		PackageID:   testPackageRTX3080Pair,
 		Image:       "python:3.12",
 		Template: runtimev1alpha1.GPUUnitTemplate{
 			Ports: []runtimev1alpha1.GPUUnitPortSpec{{
@@ -28,7 +45,7 @@ func TestNormalizeCreateGPUUnitRequest_AppliesDefaults(t *testing.T) {
 				"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA== demo@example",
 			},
 		},
-	})
+	}, testRuntimePackageCatalog())
 	if err != nil {
 		t.Fatalf("normalize create gpu unit request: %v", err)
 	}
@@ -60,6 +77,52 @@ func TestNormalizeCreateGPUUnitRequest_AppliesDefaults(t *testing.T) {
 	if req.Serverless.Enabled {
 		t.Fatalf("expected serverless to remain disabled when omitted")
 	}
+	if req.SpecName != "gpu.rtx3080.2x.10c.40g" || req.CPU != "10" || req.Memory != "40Gi" || req.GPU != 2 {
+		t.Fatalf("expected package defaults, got spec=%s cpu=%s memory=%s gpu=%d", req.SpecName, req.CPU, req.Memory, req.GPU)
+	}
+	if req.Allocation.DeviceClassName != "nvidia-rtx-3080" || req.Allocation.Count != 2 {
+		t.Fatalf("expected package DRA allocation, got %+v", req.Allocation)
+	}
+}
+
+func TestNormalizeCreateGPUUnitRequest_ExpandsPackageToDRAAllocation(t *testing.T) {
+	req, err := NormalizeCreateGPUUnitRequestWithCatalog(CreateGPUUnitRequest{
+		OperationID: "gpu-op-package",
+		Name:        "demo-package",
+		PackageID:   testPackageRTX3080Pair,
+		Image:       "pytorch:2.6",
+	}, testRuntimePackageCatalog())
+	if err != nil {
+		t.Fatalf("normalize create gpu unit request: %v", err)
+	}
+	if req.SpecName != "gpu.rtx3080.2x.10c.40g" {
+		t.Fatalf("expected package spec name, got %s", req.SpecName)
+	}
+	if req.CPU != "10" || req.Memory != "40Gi" || req.GPU != 2 {
+		t.Fatalf("expected package resources, got cpu=%s memory=%s gpu=%d", req.CPU, req.Memory, req.GPU)
+	}
+	if req.Allocation.DeviceClassName != "nvidia-rtx-3080" {
+		t.Fatalf("expected package device class, got %+v", req.Allocation)
+	}
+	if req.Allocation.ClaimName != "unit-demo-package-gpu" {
+		t.Fatalf("expected claim name for unit, got %+v", req.Allocation)
+	}
+	if req.Allocation.Count != 2 {
+		t.Fatalf("expected DRA count 2, got %+v", req.Allocation)
+	}
+}
+
+func TestNormalizeCreateGPUUnitRequest_RejectsPackageResourceOverride(t *testing.T) {
+	_, err := NormalizeCreateGPUUnitRequestWithCatalog(CreateGPUUnitRequest{
+		OperationID: "gpu-op-package-conflict",
+		Name:        "demo-package",
+		PackageID:   testPackageRTX3080Pair,
+		Image:       "pytorch:2.6",
+		Memory:      "32Gi",
+	}, testRuntimePackageCatalog())
+	if err == nil {
+		t.Fatalf("expected validation error")
+	}
 }
 
 func TestNormalizeCreateGPUUnitRequest_RejectsMissingImage(t *testing.T) {
@@ -73,16 +136,28 @@ func TestNormalizeCreateGPUUnitRequest_RejectsMissingImage(t *testing.T) {
 	}
 }
 
-func TestNormalizeCreateGPUUnitRequest_NormalizesServerless(t *testing.T) {
-	req, err := NormalizeCreateGPUUnitRequest(CreateGPUUnitRequest{
-		OperationID: "gpu-op-3",
+func TestNormalizeCreateGPUUnitRequest_RejectsMissingPackageOrDRAAllocation(t *testing.T) {
+	_, err := NormalizeCreateGPUUnitRequest(CreateGPUUnitRequest{
+		OperationID: "gpu-op-no-resources",
 		Name:        "demo-instance",
 		SpecName:    "g1.1",
+		Image:       "python:3.12",
+	})
+	if err == nil {
+		t.Fatalf("expected validation error")
+	}
+}
+
+func TestNormalizeCreateGPUUnitRequest_NormalizesServerless(t *testing.T) {
+	req, err := NormalizeCreateGPUUnitRequestWithCatalog(CreateGPUUnitRequest{
+		OperationID: "gpu-op-3",
+		Name:        "demo-instance",
+		PackageID:   testPackageRTX3080Pair,
 		Image:       "python:3.12",
 		Serverless: runtimev1alpha1.GPUUnitServerlessSpec{
 			RequestID: "SD-WEBUI",
 		},
-	})
+	}, testRuntimePackageCatalog())
 	if err != nil {
 		t.Fatalf("normalize create gpu unit request: %v", err)
 	}

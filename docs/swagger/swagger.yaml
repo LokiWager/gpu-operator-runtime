@@ -41,10 +41,10 @@ definitions:
       data:
         $ref: '#/definitions/domain.HealthStatus'
     type: object
-  api.OperatorJobResponse:
+  api.InventoryResponse:
     properties:
       data:
-        $ref: '#/definitions/domain.OperatorJob'
+        $ref: '#/definitions/domain.RuntimeInventoryStatus'
     type: object
   api.ServerlessInvocationResponse:
     properties:
@@ -55,11 +55,19 @@ definitions:
     properties:
       access:
         $ref: '#/definitions/v1alpha1.GPUUnitAccess'
+      cpu:
+        type: string
+      gpu:
+        type: integer
       image:
+        type: string
+      memory:
         type: string
       name:
         type: string
       operationID:
+        type: string
+      packageID:
         type: string
       serverless:
         $ref: '#/definitions/v1alpha1.GPUUnitServerlessSpec'
@@ -170,6 +178,12 @@ definitions:
         $ref: '#/definitions/v1alpha1.GPUUnitAccess'
       accessURL:
         type: string
+      allocation:
+        $ref: '#/definitions/v1alpha1.GPUUnitAllocationSpec'
+      cpu:
+        type: string
+      draStatus:
+        $ref: '#/definitions/v1alpha1.GPUUnitDRAStatus'
       gpu:
         type: integer
       image:
@@ -188,6 +202,8 @@ definitions:
         type: string
       observedGeneration:
         type: integer
+      packageID:
+        type: string
       phase:
         type: string
       readyReplicas:
@@ -199,10 +215,6 @@ definitions:
       serverlessStatus:
         $ref: '#/definitions/v1alpha1.GPUUnitServerlessStatus'
       serviceName:
-        type: string
-      sourceStockName:
-        type: string
-      sourceStockNamespace:
         type: string
       specName:
         type: string
@@ -245,8 +257,6 @@ definitions:
         type: integer
       startedAt:
         type: string
-      stockUnitCount:
-        type: integer
       totalGPUAllocatable:
         type: integer
       totalGPUCapacity:
@@ -258,39 +268,75 @@ definitions:
       usedGpuMemoryMiB:
         type: number
     type: object
-  domain.OperatorJob:
+  domain.RuntimeDRADeviceStatus:
     properties:
-      createdAt:
+      claimName:
         type: string
-      error:
+      consumedCapacity:
+        additionalProperties:
+          type: string
+        type: object
+      device:
         type: string
-      id:
+      driver:
         type: string
-      objectName:
+      namespace:
         type: string
-      objectNamespace:
+      pool:
         type: string
-      operationID:
+      request:
         type: string
-      status:
-        $ref: '#/definitions/domain.OperatorJobStatus'
-      type:
-        type: string
-      updatedAt:
+      shareID:
         type: string
     type: object
-  domain.OperatorJobStatus:
-    enum:
-    - pending
-    - running
-    - succeeded
-    - failed
-    type: string
-    x-enum-varnames:
-    - OperatorJobPending
-    - OperatorJobRunning
-    - OperatorJobSucceeded
-    - OperatorJobFailed
+  domain.RuntimeInventoryStatus:
+    properties:
+      draAllocatedClaims:
+        type: integer
+      draAllocatedDevices:
+        type: integer
+      draClaimCount:
+        type: integer
+      draDevices:
+        items:
+          $ref: '#/definitions/domain.RuntimeDRADeviceStatus'
+        type: array
+      draResourceSlices:
+        type: integer
+      gpuProducts:
+        items:
+          $ref: '#/definitions/domain.GPUProductHealth'
+        type: array
+      kubernetesConnected:
+        type: boolean
+      nodeCount:
+        type: integer
+      readyNodeCount:
+        type: integer
+      resourceQuotas:
+        items:
+          $ref: '#/definitions/domain.RuntimeQuotaStatus'
+        type: array
+      totalGpuAllocatable:
+        type: integer
+      totalGpuCapacity:
+        type: integer
+    type: object
+  domain.RuntimeQuotaStatus:
+    properties:
+      hard:
+        additionalProperties:
+          type: string
+        type: object
+      name:
+        type: string
+      namespace:
+        type: string
+      used:
+        additionalProperties:
+          type: string
+        type: object
+    type: object
   domain.ServerlessInvocationAck:
     properties:
       acceptedAt:
@@ -333,19 +379,6 @@ definitions:
       size:
         type: string
       storageClassName:
-        type: string
-    type: object
-  service.CreateStockUnitsRequest:
-    properties:
-      gpu:
-        type: integer
-      memory:
-        type: string
-      operationID:
-        type: string
-      replicas:
-        type: integer
-      specName:
         type: string
     type: object
   service.UpdateGPUStorageRequest:
@@ -420,6 +453,64 @@ definitions:
         type: string
       scheme:
         type: string
+    type: object
+  v1alpha1.GPUUnitAllocationSpec:
+    properties:
+      capacity:
+        additionalProperties:
+          type: string
+        description: Capacity contains DRA consumable capacity requests per device,
+          for example memory or cores.
+        type: object
+      claimName:
+        description: ClaimName is the controller-owned DRA ResourceClaim name.
+        type: string
+      claimRequestName:
+        description: ClaimRequestName is the request name inside the DRA ResourceClaim.
+        type: string
+      count:
+        description: |-
+          Count is the exact number of devices requested from the DeviceClass.
+          +kubebuilder:validation:Minimum=0
+        type: integer
+      deviceClassName:
+        description: DeviceClassName is the DRA DeviceClass used for package-backed
+          allocation.
+        type: string
+      selectors:
+        description: Selectors contains control-plane managed CEL selectors for DRA
+          devices.
+        items:
+          type: string
+        type: array
+    type: object
+  v1alpha1.GPUUnitDRADeviceStatus:
+    properties:
+      consumedCapacity:
+        additionalProperties:
+          type: string
+        type: object
+      device:
+        type: string
+      driver:
+        type: string
+      pool:
+        type: string
+      request:
+        type: string
+      shareID:
+        type: string
+    type: object
+  v1alpha1.GPUUnitDRAStatus:
+    properties:
+      allocated:
+        type: boolean
+      claimName:
+        type: string
+      devices:
+        items:
+          $ref: '#/definitions/v1alpha1.GPUUnitDRADeviceStatus'
+        type: array
     type: object
   v1alpha1.GPUUnitEnvVar:
     properties:
@@ -794,8 +885,7 @@ paths:
       - storage
   /gpu-units:
     get:
-      description: List active GPU unit resources that were created by consuming stock
-        units.
+      description: List active GPU unit resources in the fixed runtime instance namespace.
       produces:
       - application/json
       responses:
@@ -821,10 +911,9 @@ paths:
     post:
       consumes:
       - application/json
-      description: Consume one ready stock unit, keep its reserved resource envelope,
-        and persist an active GPUUnit with the caller's runtime image, template, access
-        settings, and storage mounts. Replays with the same operationID and payload
-        are idempotent.
+      description: Persist an active DRA-backed GPUUnit from a configured packageID,
+        runtime image, template, access settings, and storage mounts. Replays with
+        the same operationID and payload are idempotent.
       parameters:
       - description: Create GPU unit request
         in: body
@@ -981,70 +1070,18 @@ paths:
       summary: Health check
       tags:
       - system
-  /operator/jobs/{operationID}:
+  /operator/inventory:
     get:
-      description: Get the current state of an asynchronous stock seeding operation.
-      parameters:
-      - description: Operation ID
-        in: path
-        name: operationID
-        required: true
-        type: string
+      description: 'Return the Kubernetes-derived allocation view used by the runtime
+        API: node GPU allocatable, requested GPU from GPUUnit objects, and ResourceQuota
+        status.'
       produces:
       - application/json
       responses:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/api.OperatorJobResponse'
-        "400":
-          description: Bad Request
-          schema:
-            $ref: '#/definitions/api.ErrorResponse'
-        "404":
-          description: Not Found
-          schema:
-            $ref: '#/definitions/api.ErrorResponse'
-        "500":
-          description: Internal Server Error
-          schema:
-            $ref: '#/definitions/api.ErrorResponse'
-      summary: Get operation status
-      tags:
-      - operator
-  /operator/stock-units:
-    post:
-      consumes:
-      - application/json
-      description: Submit an operator request that creates stock GPUUnit objects in
-        the stock namespace using the built-in reservation image. Replays with the
-        same operationID and payload are idempotent.
-      parameters:
-      - description: Create stock units request
-        in: body
-        name: request
-        required: true
-        schema:
-          $ref: '#/definitions/service.CreateStockUnitsRequest'
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/api.OperatorJobResponse'
-        "202":
-          description: Accepted
-          schema:
-            $ref: '#/definitions/api.OperatorJobResponse'
-        "400":
-          description: Bad Request
-          schema:
-            $ref: '#/definitions/api.ErrorResponse'
-        "409":
-          description: Conflict
-          schema:
-            $ref: '#/definitions/api.ErrorResponse'
+            $ref: '#/definitions/api.InventoryResponse'
         "500":
           description: Internal Server Error
           schema:
@@ -1053,7 +1090,7 @@ paths:
           description: Service Unavailable
           schema:
             $ref: '#/definitions/api.ErrorResponse'
-      summary: Seed stock units
+      summary: Get runtime inventory
       tags:
       - operator
   /serverless/invocations:

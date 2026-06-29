@@ -1,6 +1,16 @@
 httpAddr: ":8080"
 reportInterval: "30s"
 nvidiaMetricsEndpoint: ""
+packages:
+  - id: "gpu-rtx3080-2x-cpu10-mem40g"
+    specName: "gpu.rtx3080.2x.10c.40g"
+    cpu: "10"
+    memory: "40Gi"
+    gpu: 2
+    allocation:
+      deviceClassName: "nvidia-rtx-3080"
+      claimRequestName: "gpu"
+      count: 2
 serverless:
   url: "nats://nats.messaging.svc.cluster.local:4222"
   subjectPrefix: "runtime.serverless"

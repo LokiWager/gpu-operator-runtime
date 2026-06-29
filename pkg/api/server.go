@@ -69,8 +69,7 @@ func (s *Server) routes() {
 	s.echo.PUT("/api/v1/gpu-units/:name", s.handleUpdateGPUUnit)
 	s.echo.DELETE("/api/v1/gpu-units/:name", s.handleDeleteGPUUnit)
 	s.echo.POST("/api/v1/serverless/invocations", s.handleCreateServerlessInvocation)
-	s.echo.POST("/api/v1/operator/stock-units", s.handleCreateStockUnits)
-	s.echo.GET("/api/v1/operator/jobs/:operationID", s.handleOperatorJobByID)
+	s.echo.GET("/api/v1/operator/inventory", s.handleRuntimeInventory)
 }
 
 // handleListGPUStorages godoc
@@ -202,7 +201,7 @@ func (s *Server) handleDeleteGPUStorage(c echo.Context) error {
 
 // handleListGPUUnits godoc
 // @Summary List GPU units
-// @Description List active GPU unit resources that were created by consuming stock units.
+// @Description List active GPU unit resources in the fixed runtime instance namespace.
 // @Tags runtime
 // @Produce json
 // @Success 200 {object} GPUUnitListResponse
@@ -220,7 +219,7 @@ func (s *Server) handleListGPUUnits(c echo.Context) error {
 
 // handleCreateGPUUnit godoc
 // @Summary Create a GPU unit
-// @Description Consume one ready stock unit, keep its reserved resource envelope, and persist an active GPUUnit with the caller's runtime image, template, access settings, and storage mounts. Replays with the same operationID and payload are idempotent.
+// @Description Persist an active DRA-backed GPUUnit from a configured packageID, runtime image, template, access settings, and storage mounts. Replays with the same operationID and payload are idempotent.
 // @Tags runtime
 // @Accept json
 // @Produce json
@@ -237,11 +236,6 @@ func (s *Server) handleCreateGPUUnit(c echo.Context) error {
 	if err := c.Bind(&req); err != nil {
 		return writeError(c, http.StatusBadRequest, "invalid_request", err.Error())
 	}
-	req, err := contract.NormalizeCreateGPUUnitRequest(req)
-	if err != nil {
-		return writeServiceError(c, err, "invalid_request")
-	}
-
 	instance, created, err := s.service.CreateGPUUnit(c.Request().Context(), req)
 	if err != nil {
 		return writeServiceError(c, err, "create_gpuunit_failed")
@@ -365,58 +359,21 @@ func (s *Server) handleCreateServerlessInvocation(c echo.Context) error {
 	return writeData(c, http.StatusOK, ack)
 }
 
-// handleCreateStockUnits godoc
-// @Summary Seed stock units
-// @Description Submit an operator request that creates stock GPUUnit objects in the stock namespace using the built-in reservation image. Replays with the same operationID and payload are idempotent.
+// handleRuntimeInventory godoc
+// @Summary Get runtime inventory
+// @Description Return the Kubernetes-derived allocation view used by the runtime API: node GPU allocatable, requested GPU from GPUUnit objects, and ResourceQuota status.
 // @Tags operator
-// @Accept json
 // @Produce json
-// @Param request body service.CreateStockUnitsRequest true "Create stock units request"
-// @Success 200 {object} OperatorJobResponse
-// @Success 202 {object} OperatorJobResponse
-// @Failure 400 {object} ErrorResponse
-// @Failure 409 {object} ErrorResponse
+// @Success 200 {object} InventoryResponse
 // @Failure 503 {object} ErrorResponse
 // @Failure 500 {object} ErrorResponse
-// @Router /operator/stock-units [post]
-func (s *Server) handleCreateStockUnits(c echo.Context) error {
-	var req service.CreateStockUnitsRequest
-	if err := c.Bind(&req); err != nil {
-		return writeError(c, http.StatusBadRequest, "invalid_request", err.Error())
-	}
-
-	job, accepted, err := s.service.CreateStockUnitsAsync(c.Request().Context(), req)
+// @Router /operator/inventory [get]
+func (s *Server) handleRuntimeInventory(c echo.Context) error {
+	inventory, err := s.service.RuntimeInventory(c.Request().Context())
 	if err != nil {
-		return writeServiceError(c, err, "create_stock_units_job_failed")
+		return writeServiceError(c, err, "runtime_inventory_failed")
 	}
-	if accepted {
-		return writeData(c, http.StatusAccepted, job)
-	}
-	return writeData(c, http.StatusOK, job)
-}
-
-// handleOperatorJobByID godoc
-// @Summary Get operation status
-// @Description Get the current state of an asynchronous stock seeding operation.
-// @Tags operator
-// @Produce json
-// @Param operationID path string true "Operation ID"
-// @Success 200 {object} OperatorJobResponse
-// @Failure 400 {object} ErrorResponse
-// @Failure 404 {object} ErrorResponse
-// @Failure 500 {object} ErrorResponse
-// @Router /operator/jobs/{operationID} [get]
-func (s *Server) handleOperatorJobByID(c echo.Context) error {
-	operationID := c.Param("operationID")
-	if operationID == "" {
-		return writeError(c, http.StatusBadRequest, "invalid_request", "operationID is required")
-	}
-
-	job, err := s.service.GetOperatorJob(c.Request().Context(), operationID)
-	if err != nil {
-		return writeServiceError(c, err, "job_not_found")
-	}
-	return writeData(c, http.StatusOK, job)
+	return writeData(c, http.StatusOK, inventory)
 }
 
 // handleHealth godoc

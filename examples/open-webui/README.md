@@ -18,14 +18,14 @@ That gives the project a much cleaner teaching story:
 
 In the current chapter, the runtime model is intentionally small:
 
-- the operator API seeds stock `GPUUnit` objects in `runtime-stock`
-- the runtime API consumes one ready stock unit into `runtime-instance`
-- the same `GPUUnit.spec` is used for both stock and active runtime
+- the runtime API persists active `GPUUnit` objects directly in `runtime-instance`
+- each create request carries its own image, memory, GPU count, template, access settings, and optional storage mounts
+- Kubernetes performs the final allocation through extended resources, scheduler placement, and namespace quotas
 
 That means Open WebUI should be prepared exactly like any other app image:
 
-- seed one or more stock units with the desired image and env
-- consume one ready unit when you want a user-facing runtime
+- create one active unit for the UI runtime
+- set `gpu: 0` for the UI so GPU budget stays with the inference backend
 
 ## Dockerfile
 
@@ -41,7 +41,7 @@ It sets defaults that match this project:
 Build it with:
 
 ```bash
-docker build -t loki/open-webui-runtime:part7 /Users/haotingyi/Documents/workspaces/loki/gpu-operator-runtime/examples/open-webui
+docker build -t loki/open-webui-runtime:part19 /Users/haotingyi/Documents/workspaces/loki/gpu-operator-runtime/examples/open-webui
 ```
 
 ## Recommended Runtime Layout
@@ -61,20 +61,18 @@ That backend will eventually publish a service URL like:
 http://unit-vllm-chat.runtime-instance.svc.cluster.local:8000/v1
 ```
 
-### 2. Seed Open WebUI stock units
-
-Use the operator API to seed a CPU runtime shape for the UI:
+### 2. Create the Open WebUI runtime
 
 ```bash
-curl -s -X POST http://127.0.0.1:8080/api/v1/operator/stock-units \
+curl -s -X POST http://127.0.0.1:8080/api/v1/gpu-units \
   -H 'Content-Type: application/json' \
   -d '{
-    "operationID":"stock-open-webui-001",
+    "operationID":"unit-open-webui-001",
+    "name":"open-webui",
     "specName":"ui.1",
-    "image":"loki/open-webui-runtime:part7",
+    "image":"loki/open-webui-runtime:part19",
     "memory":"2Gi",
     "gpu":0,
-    "replicas":1,
     "access":{
       "primaryPort":"http",
       "scheme":"http"
@@ -92,23 +90,10 @@ curl -s -X POST http://127.0.0.1:8080/api/v1/operator/stock-units \
   }' | jq
 ```
 
-Wait until the stock unit is ready:
+Wait until the active UI unit is ready:
 
 ```bash
-kubectl get gpuunits -n runtime-stock
-```
-
-### 3. Consume one stock unit into the active UI runtime
-
-```bash
-curl -s -X POST http://127.0.0.1:8080/api/v1/gpu-units \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "operationID":"unit-open-webui-001",
-    "name":"open-webui",
-    "namespace":"runtime-instance",
-    "specName":"ui.1"
-  }' | jq
+kubectl get gpuunits -n runtime-instance
 ```
 
 In this layout:
@@ -116,15 +101,15 @@ In this layout:
 - the Open WebUI pod does not request GPU
 - the Open WebUI service becomes the browser entrypoint
 - the vLLM service stays the model backend
-- the active unit inherits the exact runtime spec that was seeded into stock
+- the active unit stores the exact runtime spec submitted by the API
 
 ## How This Maps to the Project
 
 This is the cleanest way to use Open WebUI in the current runtime:
 
-- one stock class for GPU inference backends
-- one stock class for CPU UI runtimes
-- one shared `GPUUnit` schema for both
+- one active GPUUnit for the GPU inference backend
+- one active GPUUnit for the CPU UI runtime
+- one shared `GPUUnit` schema, with resource requests making the allocation explicit
 
 That helps readers understand a real platform concern:
 

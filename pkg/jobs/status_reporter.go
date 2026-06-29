@@ -46,7 +46,6 @@ func (r *StatusReporter) Start(ctx context.Context) {
 				"readyNodes", health.ReadyNodeCount,
 				"gpuCapacity", health.TotalGPUCapacity,
 				"gpuAllocatable", health.TotalGPUAllocatable,
-				"stockUnits", health.StockUnitCount,
 				"activeUnits", health.ActiveUnitCount,
 			)
 		}

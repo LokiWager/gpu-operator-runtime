@@ -85,6 +85,10 @@ func main() {
 
 	appLogger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	svc := service.New(kubeClient, operatorClient, appLogger)
+	if err := svc.ConfigureRuntimePackages(cfg.Packages); err != nil {
+		setupLog.Error(err, "Invalid runtime package catalog", "config", configPath)
+		os.Exit(1)
+	}
 	svc.ConfigureNvidiaMetrics(cfg.NvidiaMetricsEndpoint, nil)
 	serverlessPublisher, err := serverless.NewNATSPublisher(ctx, serverlessCfg, appLogger)
 	if err != nil {
@@ -96,7 +100,6 @@ func main() {
 
 	reporter := jobs.NewStatusReporter(svc, reportInterval, appLogger)
 	go reporter.Start(ctx)
-	go svc.StartOperatorJobWorker(ctx)
 
 	httpServer := &http.Server{
 		Addr:              cfg.HTTPAddr,

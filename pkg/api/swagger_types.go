@@ -29,9 +29,9 @@ type GPUStorageResponse struct {
 	Data domain.GPUStorageRuntime `json:"data"`
 }
 
-// OperatorJobResponse wraps one operator job payload for Swagger generation.
-type OperatorJobResponse struct {
-	Data domain.OperatorJob `json:"data"`
+// InventoryResponse wraps the runtime allocation inventory payload.
+type InventoryResponse struct {
+	Data domain.RuntimeInventoryStatus `json:"data"`
 }
 
 // ServerlessInvocationResponse wraps one queued serverless invocation acknowledgement.

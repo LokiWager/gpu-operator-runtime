@@ -291,11 +291,19 @@ func (s *Service) dispatchToWorker(ctx context.Context, worker Worker, invocatio
 }
 
 func buildCreateRequest(template domain.GPUUnitRuntime, invocationID string) runtimeService.CreateGPUUnitRequest {
+	allocation := template.Allocation
+	allocation.ClaimName = ""
+	workerName := generatedWorkerName(template.Serverless.RequestID, invocationID)
 	return runtimeService.CreateGPUUnitRequest{
 		OperationID:   "activate-" + invocationID,
-		Name:          generatedWorkerName(template.Serverless.RequestID, invocationID),
+		Name:          workerName,
+		PackageID:     template.PackageID,
 		SpecName:      template.SpecName,
 		Image:         template.Image,
+		CPU:           template.CPU,
+		Memory:        template.Memory,
+		GPU:           template.GPU,
+		Allocation:    allocation,
 		Template:      template.Template,
 		Access:        template.Access,
 		SSH:           template.SSH,

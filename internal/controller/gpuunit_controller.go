@@ -14,6 +14,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	resourcev1 "k8s.io/api/resource/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -51,6 +52,9 @@ var errUnitServerlessSpecIncomplete = errors.New("serverless access is enabled b
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=resource.k8s.io,resources=resourceclaims,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=resource.k8s.io,resources=resourceclaims/status,verbs=get
+// +kubebuilder:rbac:groups=resource.k8s.io,resources=resourceslices,verbs=get;list;watch
 
 // Reconcile moves the observed cluster state toward GPUUnit spec.
 func (r *GPUUnitReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -123,6 +127,14 @@ func (r *GPUUnitReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, err
 	}
 
+	draStatus, draClaimChanged, err := r.reconcileGPUUnitDRAClaim(ctx, &instance)
+	if err != nil {
+		if updateErr := r.markUnitFailed(ctx, &instance, serviceName, accessURL, runtimev1alpha1.ReasonUnitDRAClaimSyncFailed, err.Error()); updateErr != nil {
+			return ctrl.Result{}, updateErr
+		}
+		return ctrl.Result{}, err
+	}
+
 	networkPolicyChanged, err := r.reconcileGPUUnitNetworkPolicy(ctx, &instance)
 	if err != nil {
 		if updateErr := r.markUnitFailed(ctx, &instance, serviceName, accessURL, runtimev1alpha1.ReasonUnitNetworkPolicySyncFailed, err.Error()); updateErr != nil {
@@ -162,12 +174,13 @@ func (r *GPUUnitReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		storageWaitMessage,
 		sshProgress,
 		serverlessProgress,
+		draStatus,
 	)
 	if err := r.updateGPUUnitStatus(ctx, &instance, next); err != nil {
 		return ctrl.Result{}, err
 	}
 
-	if serviceChanged || sshConfigChanged || networkPolicyChanged || deploymentChanged || !storageReady {
+	if serviceChanged || sshConfigChanged || draClaimChanged || networkPolicyChanged || deploymentChanged || !storageReady {
 		return ctrl.Result{RequeueAfter: requeueAfterUpdate}, nil
 	}
 	return ctrl.Result{}, nil
@@ -184,6 +197,7 @@ func (r *GPUUnitReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.Service{}).
 		Owns(&corev1.ConfigMap{}).
 		Owns(&networkingv1.NetworkPolicy{}).
+		Owns(&resourcev1.ResourceClaim{}).
 		Named(gpuUnitControllerName).
 		Complete(r)
 }
@@ -323,10 +337,7 @@ func (r *GPUUnitReconciler) markUnitFailed(ctx context.Context, instance *runtim
 		ServiceName:        serviceName,
 		AccessURL:          accessURL,
 	}
-	if lifecycleForUnit(*instance) == runtimev1alpha1.LifecycleStock {
-		next.ServiceName = ""
-		next.AccessURL = ""
-	} else if instance.Spec.SSH.Enabled {
+	if instance.Spec.SSH.Enabled {
 		sshProgress := buildUnitSSHProgress(*instance, 0, "")
 		sshProgress.Phase = runtimev1alpha1.UnitSSHPhaseFailed
 		sshProgress.Reason = firstNonEmpty(reason, runtimev1alpha1.ReasonUnitSSHFailed)
@@ -334,7 +345,7 @@ func (r *GPUUnitReconciler) markUnitFailed(ctx context.Context, instance *runtim
 		next.SSH = gpuUnitSSHStatusFromProgress(sshProgress)
 		apimeta.SetStatusCondition(&next.Conditions, buildUnitSSHCondition(instance.Generation, sshProgress))
 	}
-	if lifecycleForUnit(*instance) != runtimev1alpha1.LifecycleStock && unitServerlessEnabled(instance.Spec.Serverless) {
+	if unitServerlessEnabled(instance.Spec.Serverless) {
 		serverlessProgress := buildUnitServerlessProgress(*instance, 0, r.ServerlessQueueConfig.SubjectPrefix, "")
 		serverlessProgress.Phase = runtimev1alpha1.UnitServerlessPhaseFailed
 		serverlessProgress.Reason = firstNonEmpty(reason, runtimev1alpha1.ReasonUnitServerlessFailed)
@@ -418,13 +429,6 @@ func (r *GPUUnitReconciler) inspectGPUUnitPods(ctx context.Context, instance *ru
 
 // resolveGPUUnitStorageMounts loads referenced storage objects and reports whether they are ready.
 func (r *GPUUnitReconciler) resolveGPUUnitStorageMounts(ctx context.Context, instance *runtimev1alpha1.GPUUnit) ([]resolvedGPUUnitStorageMount, bool, string, error) {
-	if isStockUnit(*instance) {
-		if len(instance.Spec.StorageMounts) > 0 {
-			return nil, false, "", errors.New("stock units cannot declare storageMounts")
-		}
-		return nil, true, "", nil
-	}
-
 	if len(instance.Spec.StorageMounts) == 0 {
 		return nil, true, "", nil
 	}

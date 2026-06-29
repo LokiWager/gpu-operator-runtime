@@ -30,7 +30,7 @@ spec:
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: GPUUnit is the schema for one stock or active runtime unit.
+        description: GPUUnit is the schema for one active runtime unit.
         properties:
           apiVersion:
             description: |-
@@ -60,6 +60,44 @@ spec:
                   scheme:
                     type: string
                 type: object
+              allocation:
+                description: Allocation describes the Kubernetes-native allocation
+                  path used for this unit.
+                properties:
+                  capacity:
+                    additionalProperties:
+                      type: string
+                    description: Capacity contains DRA consumable capacity requests
+                      per device, for example memory or cores.
+                    type: object
+                  claimName:
+                    description: ClaimName is the controller-owned DRA ResourceClaim
+                      name.
+                    type: string
+                  claimRequestName:
+                    description: ClaimRequestName is the request name inside the DRA
+                      ResourceClaim.
+                    type: string
+                  count:
+                    description: Count is the exact number of devices requested from
+                      the DeviceClass.
+                    format: int64
+                    minimum: 0
+                    type: integer
+                  deviceClassName:
+                    description: DeviceClassName is the DRA DeviceClass used for package-backed
+                      allocation.
+                    type: string
+                  selectors:
+                    description: Selectors contains control-plane managed CEL selectors
+                      for DRA devices.
+                    items:
+                      type: string
+                    type: array
+                type: object
+              cpu:
+                description: CPU is the CPU request/limit for the unit workload.
+                type: string
               gpu:
                 description: GPU is the number of GPUs requested by the unit workload.
                 format: int32
@@ -70,6 +108,10 @@ spec:
                 type: string
               memory:
                 description: Memory is the memory request/limit for the unit workload.
+                type: string
+              packageID:
+                description: PackageID is the control-plane package that was expanded
+                  into this runtime contract.
                 type: string
               serverless:
                 description: Serverless records the control-plane serverless policy
@@ -294,6 +336,36 @@ spec:
                   - type
                   type: object
                 type: array
+              dra:
+                description: GPUUnitDRAStatus reports the DRA ResourceClaim observed
+                  for one runtime unit.
+                properties:
+                  allocated:
+                    type: boolean
+                  claimName:
+                    type: string
+                  devices:
+                    items:
+                      description: GPUUnitDRADeviceStatus reports one DRA-allocated
+                        device from ResourceClaim status.
+                      properties:
+                        consumedCapacity:
+                          additionalProperties:
+                            type: string
+                          type: object
+                        device:
+                          type: string
+                        driver:
+                          type: string
+                        pool:
+                          type: string
+                        request:
+                          type: string
+                        shareID:
+                          type: string
+                      type: object
+                    type: array
+                type: object
               lastSyncTime:
                 format: date-time
                 type: string

@@ -2,39 +2,37 @@
 
 Teaching-oriented Golang + Kubernetes project for building a GPU runtime control plane.
 
-The current chapter adds durable invocation result storage for the serverless execution boundary:
+The current chapter moves runtime instance creation to DRA-backed package allocation:
 
-- `GPUUnit` still records a `serverless` policy block owned by the control plane
-- the control plane-generated `requestID` still lives on the unit spec instead of being invented by the runtime
-- the manager can optionally connect to NATS JetStream for durable queue-first invocation ingress
-- `/api/v1/serverless/invocations` still persists invocation envelopes before any worker executes them
-- the standalone `activator` process still consumes queued invocations, registers ready workers in memory, and publishes worker-targeted dispatch messages
-- the `serverless-sidecar` command still consumes those worker-targeted dispatch subjects from inside the worker Pod
-- the user-facing framework now has a concrete unix domain socket contract that the sidecar calls
-- a small Go helper package under `pkg/framework` turns that contract into one reusable HTTP handler for framework-based images
-- the sidecar is the only component that touches NATS credentials and subject names; the framework never gets raw queue access
-- `mode: "sync"` and `mode: "async"` now share the same worker loop, with `sync` receiving an invocation-specific reply in addition to the durable result subject
-- a new `result-store` command consumes `runtime.serverless.result.*` and persists invocation metadata to ScyllaDB for control-plane lookup
-- the standalone `image-accelerator` tool from Part 12 remains the cold-start preparation step for later worker lifecycle work
+- create requests can pass a controlled `packageID`, for example `gpu-rtx3080-2x-cpu10-mem40g`
+- the package expands into CPU, memory, GPU count, and a DRA `DeviceClass`
+- the controller creates a GPUUnit-owned `ResourceClaim` and mounts it into the Pod through `pod.spec.resourceClaims`
+- the runtime does not set traditional `nvidia.com/gpu` requests on the container
+- `GET /api/v1/operator/inventory` exposes DRA `ResourceClaim` and `ResourceSlice` visibility alongside node and quota context
+- Kubernetes and the DRA driver own final allocation; runtime no longer counts `GPUUnit.spec.gpu` as the DRA inventory source of truth
 
-The operator API still seeds stock units into `runtime-stock`, and the runtime API still consumes ready stock into active `GPUUnit` objects in `runtime-instance`. This chapter keeps activator lifecycle management separate from result persistence so the control-plane result path can scale independently.
+The runtime still does not become a scheduler. It validates product-level intent, expands trusted packages, exposes inventory visibility, and creates Kubernetes objects. Kubernetes remains the final allocator through `ResourceSlice`, `ResourceClaim.status`, scheduler placement, and namespace policy.
 
 ## Prerequisites
 
 - Go 1.26+
 - a reachable Kubernetes cluster (`KUBECONFIG` or in-cluster config)
 
-## GPU prerequisite
+## GPU and DRA prerequisite
 
-This project maps GPU requests to the standard Kubernetes resource name `nvidia.com/gpu`.
+The main chapter path expects Kubernetes Dynamic Resource Allocation and a GPU DRA driver.
 
-That means the cluster must already expose NVIDIA GPU resources before a `GPUUnit` with `gpu > 0` can schedule successfully.
+For the tutorial package configured in `config/local/runtime-api.yaml`, the cluster should expose a DRA `DeviceClass` named:
 
-In practice, the simplest setup is:
+```text
+nvidia-rtx-3080
+```
 
-- install the NVIDIA GPU Operator on the cluster
+The driver should also publish `ResourceSlice` objects that make matching devices visible to the scheduler.
 
-Equivalent setups also work, as long as the cluster already provides:
+`DeviceClass` is a Kubernetes API object and should be managed by ops through YAML/GitOps or a controlled admin API. `ResourceSlice` objects are driver-published capacity; the runtime should observe them, not create them for user requests.
+
+The runtime still reads `nvidia.com/gpu` node capacity for health and telemetry context. In practice, that requires a cluster that already provides:
 
 - NVIDIA drivers
 - container runtime integration
@@ -46,7 +44,7 @@ You can verify that the cluster is ready with:
 kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.allocatable.nvidia\.com/gpu}{"\n"}{end}'
 ```
 
-If the value is empty, a request like `"gpu": 1` will stay pending. For API and controller development on a non-GPU cluster, use `gpu: 0`.
+If the value is empty, node-level GPU health fields will be empty. If the DRA `DeviceClass` or `ResourceSlice` objects are missing, a package-backed request can be accepted by the runtime but remain pending in Kubernetes until the DRA driver reports capacity.
 
 ## Storage prerequisite
 
@@ -250,11 +248,10 @@ http://127.0.0.1:8080/swagger/index.html
 
 ## Install the CRDs
 
-Create the working namespaces first:
+Create the runtime namespaces and quota guardrails first:
 
 ```bash
-kubectl create namespace runtime-stock
-kubectl create namespace runtime-instance
+kubectl apply -k config/runtime
 ```
 
 Install the CRDs:
@@ -273,31 +270,10 @@ kubectl apply -f config/samples/runtime_v1alpha1_gpuunit.yaml
 
 ## Quick start
 
-### 1. Seed stock units
+### 1. Inspect runtime inventory
 
 ```bash
-curl -s -X POST http://127.0.0.1:8080/api/v1/operator/stock-units \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "operationID":"stock-g1-demo-001",
-    "specName":"g1.1",
-    "memory":"16Gi",
-    "gpu":1,
-    "replicas":2
-  }' | jq
-```
-
-Check the asynchronous job:
-
-```bash
-curl -s http://127.0.0.1:8080/api/v1/operator/jobs/stock-g1-demo-001 | jq
-```
-
-Inspect stock units:
-
-```bash
-kubectl get gpuunits -n runtime-stock
-kubectl get gpuunit -n runtime-stock
+curl -s http://127.0.0.1:8080/api/v1/operator/inventory | jq
 ```
 
 ### 2. Create prepared storage
@@ -336,7 +312,7 @@ If `runtime-proxy` is running, the same storage will be available through:
 http://127.0.0.1:8090/storage/runtime-instance/model-cache/
 ```
 
-### 3. Consume one ready stock unit into an active runtime
+### 3. Create an active runtime from a DRA package
 
 ```bash
 curl -s -X POST http://127.0.0.1:8080/api/v1/gpu-units \
@@ -344,7 +320,7 @@ curl -s -X POST http://127.0.0.1:8080/api/v1/gpu-units \
   -d '{
     "operationID":"unit-demo-001",
     "name":"demo-instance",
-    "specName":"g1.1",
+    "packageID":"gpu-rtx3080-2x-cpu10-mem40g",
     "image":"python:3.12",
     "access":{
       "primaryPort":"http",
@@ -375,6 +351,23 @@ curl -s -X POST http://127.0.0.1:8080/api/v1/gpu-units \
     ]
   }' | jq
 ```
+
+The package is loaded from `runtime-api.yaml`:
+
+```yaml
+packages:
+  - id: "gpu-rtx3080-2x-cpu10-mem40g"
+    specName: "gpu.rtx3080.2x.10c.40g"
+    cpu: "10"
+    memory: "40Gi"
+    gpu: 2
+    allocation:
+      deviceClassName: "nvidia-rtx-3080"
+      claimRequestName: "gpu"
+      count: 2
+```
+
+It expands into `cpu: "10"`, `memory: "40Gi"`, `gpu: 2`, and a DRA allocation that references `DeviceClass` `nvidia-rtx-3080`. The controller creates a per-unit `ResourceClaim` and the Pod references that claim. There is no non-DRA create fallback in this chapter; callers must use a configured package or an internally trusted DRA allocation.
 
 ### 4. Inspect the active runtime
 
@@ -454,8 +447,7 @@ curl -s -X POST 'http://127.0.0.1:8080/api/v1/gpu-storages/model-cache/recover' 
 
 ## Operational notes
 
-- Stock replenishment is still explicit. If you want more stock, call `POST /api/v1/operator/stock-units` again.
-- Active runtime create is idempotent on `operationID`. Replaying the same request returns the same active unit instead of consuming stock twice.
+- Runtime create is idempotent on `operationID`. Replaying the same request returns the same active unit instead of creating a duplicate workload.
 - `GPUStorage` is a separate lifecycle object. Runtime deletion does not delete storage.
 - Storage deletion is blocked by the API while an active `GPUUnit` still references that storage.
 - `GPUUnit` mounts only reference storage by name and mount path. PVC naming, claim lifecycle, and status tracking stay controller-owned.
@@ -483,12 +475,12 @@ make ci
 ## Project layout
 
 - `cmd/controller-manager`: reconciler-only controller process for `GPUUnit` and `GPUStorage`
-- `cmd/runtime-api`: HTTP API, API-owned async job worker, status reporter, and serverless ingress publisher
+- `cmd/runtime-api`: HTTP API, status reporter, and serverless ingress publisher
 - `api/v1alpha1`: `GPUUnit` and `GPUStorage` API schemas
 - `internal/controller`: runtime and storage reconcilers plus workload helper logic
 - `pkg/api`: Echo HTTP handlers and Swagger annotations
 - `pkg/config`: local process configuration loaded from YAML
-- `pkg/service`: stock seeding, stock consumption, storage CRUD, recovery actions, idempotency, and API orchestration
+- `pkg/service`: package expansion, DRA-aware inventory, storage CRUD, recovery actions, idempotency, and API orchestration
 - `pkg/jobs`: periodic status logging
 - `config/`: generated CRDs, RBAC, and sample manifests
 

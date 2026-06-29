@@ -6,17 +6,23 @@ import (
 	"sort"
 	"strings"
 
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/util/validation"
 
 	runtimev1alpha1 "github.com/loki/gpu-operator-runtime/api/v1alpha1"
 )
 
-// CreateGPUUnitRequest asks the service to consume one ready stock unit into active runtime.
+// CreateGPUUnitRequest asks the service to create one active runtime unit.
 type CreateGPUUnitRequest struct {
 	OperationID   string                                `json:"operationID"`
 	Name          string                                `json:"name"`
+	PackageID     string                                `json:"packageID,omitempty"`
 	SpecName      string                                `json:"specName"`
 	Image         string                                `json:"image"`
+	CPU           string                                `json:"cpu,omitempty"`
+	Memory        string                                `json:"memory,omitempty"`
+	GPU           int32                                 `json:"gpu,omitempty"`
+	Allocation    runtimev1alpha1.GPUUnitAllocationSpec `json:"-"`
 	Template      runtimev1alpha1.GPUUnitTemplate       `json:"template,omitempty"`
 	Access        runtimev1alpha1.GPUUnitAccess         `json:"access,omitempty"`
 	SSH           runtimev1alpha1.GPUUnitSSHSpec        `json:"ssh,omitempty"`
@@ -36,6 +42,11 @@ type UpdateGPUUnitRequest struct {
 
 // NormalizeCreateGPUUnitRequest trims, defaults, and validates one create request.
 func NormalizeCreateGPUUnitRequest(req CreateGPUUnitRequest) (CreateGPUUnitRequest, error) {
+	return NormalizeCreateGPUUnitRequestWithCatalog(req, nil)
+}
+
+// NormalizeCreateGPUUnitRequestWithCatalog trims, defaults, and validates one create request with an ops-managed package catalog.
+func NormalizeCreateGPUUnitRequestWithCatalog(req CreateGPUUnitRequest, catalog RuntimePackageCatalog) (CreateGPUUnitRequest, error) {
 	req.OperationID = strings.TrimSpace(req.OperationID)
 	if req.OperationID == "" {
 		return CreateGPUUnitRequest{}, &ValidationError{Message: "operationID is required"}
@@ -47,6 +58,20 @@ func NormalizeCreateGPUUnitRequest(req CreateGPUUnitRequest) (CreateGPUUnitReque
 	}
 	req.Name = name
 
+	req.PackageID = strings.ToLower(strings.TrimSpace(req.PackageID))
+	if req.PackageID != "" {
+		if _, ok := catalog.Lookup(req.PackageID); ok || strings.TrimSpace(req.Allocation.DeviceClassName) == "" {
+			expanded, err := ExpandRuntimePackage(req, catalog)
+			if err != nil {
+				return CreateGPUUnitRequest{}, err
+			}
+			req = expanded
+		}
+	}
+	if req.PackageID == "" && strings.TrimSpace(req.Allocation.DeviceClassName) == "" {
+		return CreateGPUUnitRequest{}, &ValidationError{Message: "packageID is required for DRA-backed create requests"}
+	}
+
 	req.SpecName = strings.TrimSpace(req.SpecName)
 	if req.SpecName == "" {
 		return CreateGPUUnitRequest{}, &ValidationError{Message: "specName is required"}
@@ -55,6 +80,29 @@ func NormalizeCreateGPUUnitRequest(req CreateGPUUnitRequest) (CreateGPUUnitReque
 	req.Image = strings.TrimSpace(req.Image)
 	if req.Image == "" {
 		return CreateGPUUnitRequest{}, &ValidationError{Message: "image is required"}
+	}
+
+	req.CPU = strings.TrimSpace(req.CPU)
+	if req.CPU != "" {
+		if _, err := resource.ParseQuantity(req.CPU); err != nil {
+			return CreateGPUUnitRequest{}, &ValidationError{Message: fmt.Sprintf("cpu %q is invalid: %v", req.CPU, err)}
+		}
+	}
+	req.Memory = strings.TrimSpace(req.Memory)
+	if req.Memory != "" {
+		if _, err := resource.ParseQuantity(req.Memory); err != nil {
+			return CreateGPUUnitRequest{}, &ValidationError{Message: fmt.Sprintf("memory %q is invalid: %v", req.Memory, err)}
+		}
+	}
+	if req.GPU < 0 {
+		return CreateGPUUnitRequest{}, &ValidationError{Message: "gpu should be >= 0"}
+	}
+	req.Allocation, err = NormalizeDRAAllocation(req.Name, req.Allocation)
+	if err != nil {
+		return CreateGPUUnitRequest{}, err
+	}
+	if req.CPU == "" || req.Memory == "" || req.GPU <= 0 {
+		return CreateGPUUnitRequest{}, &ValidationError{Message: "cpu, memory, gpu, and dra allocation are required"}
 	}
 
 	template, err := NormalizeGPUUnitTemplate(req.Template)
@@ -88,6 +136,39 @@ func NormalizeCreateGPUUnitRequest(req CreateGPUUnitRequest) (CreateGPUUnitReque
 	req.StorageMounts = mounts
 
 	return req, nil
+}
+
+// NormalizeDRAAllocation defaults and validates a DRA allocation block that came from a trusted package.
+func NormalizeDRAAllocation(unitName string, allocation runtimev1alpha1.GPUUnitAllocationSpec) (runtimev1alpha1.GPUUnitAllocationSpec, error) {
+	allocation.DeviceClassName = strings.TrimSpace(allocation.DeviceClassName)
+	if allocation.DeviceClassName == "" {
+		return runtimev1alpha1.GPUUnitAllocationSpec{}, &ValidationError{Message: "dra deviceClassName is required"}
+	}
+	allocation.ClaimName = strings.TrimSpace(allocation.ClaimName)
+	if allocation.ClaimName == "" {
+		allocation.ClaimName = runtimev1alpha1.GPUUnitNamePrefix + unitName + "-gpu"
+	}
+	allocation.ClaimRequestName = strings.TrimSpace(allocation.ClaimRequestName)
+	if allocation.ClaimRequestName == "" {
+		allocation.ClaimRequestName = runtimev1alpha1.UnitDRAClaimRequestName
+	}
+	if allocation.Count <= 0 {
+		return runtimev1alpha1.GPUUnitAllocationSpec{}, &ValidationError{Message: "dra count should be > 0"}
+	}
+	for key, value := range allocation.Capacity {
+		if strings.TrimSpace(key) == "" {
+			return runtimev1alpha1.GPUUnitAllocationSpec{}, &ValidationError{Message: "dra capacity key is required"}
+		}
+		if _, err := resource.ParseQuantity(value); err != nil {
+			return runtimev1alpha1.GPUUnitAllocationSpec{}, &ValidationError{Message: fmt.Sprintf("dra capacity %q is invalid: %v", key, err)}
+		}
+	}
+	for _, selector := range allocation.Selectors {
+		if strings.TrimSpace(selector) == "" {
+			return runtimev1alpha1.GPUUnitAllocationSpec{}, &ValidationError{Message: "dra selector expression is required"}
+		}
+	}
+	return allocation, nil
 }
 
 // NormalizeUpdateGPUUnitRequest trims, defaults, and validates one update request.

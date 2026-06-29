@@ -133,8 +133,18 @@ func TestServiceProcessInvocationCreatesWorkerWhenNoReadyWorkerExists(t *testing
 		Name:      "unit-sd-webui-template",
 		Namespace: runtimev1alpha1.DefaultInstanceNamespace,
 		Phase:     runtimev1alpha1.PhaseProgressing,
-		SpecName:  "g1.1",
+		PackageID: "gpu-rtx3080-2x-cpu10-mem40g",
+		SpecName:  "gpu.rtx3080.2x.10c.40g",
 		Image:     "python:3.12",
+		CPU:       "10",
+		Memory:    "40Gi",
+		GPU:       2,
+		Allocation: runtimev1alpha1.GPUUnitAllocationSpec{
+			DeviceClassName:  "nvidia-rtx-3080",
+			ClaimName:        "unit-sd-webui-template-gpu",
+			ClaimRequestName: runtimev1alpha1.UnitDRAClaimRequestName,
+			Count:            2,
+		},
 		Template: runtimev1alpha1.GPUUnitTemplate{
 			Ports: []runtimev1alpha1.GPUUnitPortSpec{{Name: "http", Port: 8080}},
 		},
@@ -178,6 +188,12 @@ func TestServiceProcessInvocationCreatesWorkerWhenNoReadyWorkerExists(t *testing
 	}
 	if runtime.createCalls[0].OperationID != "activate-inv-create-1" {
 		t.Fatalf("unexpected create request: %+v", runtime.createCalls[0])
+	}
+	if runtime.createCalls[0].PackageID != "gpu-rtx3080-2x-cpu10-mem40g" {
+		t.Fatalf("expected package to be cloned, got %+v", runtime.createCalls[0])
+	}
+	if runtime.createCalls[0].Allocation.DeviceClassName != "nvidia-rtx-3080" || runtime.createCalls[0].Allocation.ClaimName != "" {
+		t.Fatalf("expected DRA allocation with regenerated claim name, got %+v", runtime.createCalls[0].Allocation)
 	}
 	if dispatches.last.WorkerName != "unit-sd-webui-new" {
 		t.Fatalf("expected dispatch to cloned worker, got %+v", dispatches.last)
