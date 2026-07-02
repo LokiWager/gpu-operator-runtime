@@ -21,27 +21,9 @@
 17. ScyllaDB-backed invocation result store, Kubernetes ScyllaDB stack, and control-plane result consumer
 18. Split runtime control plane with separate controller-manager and runtime-api processes
 19. DRA-backed package allocation with ResourceClaim status as the allocation source of truth
+20. GPU virtualization with HAMi on top of DRA
 
 ## Planned Chapters
-
-### 20. GPU Virtualization with HAMi on top of DRA
-
-Goal: support fractional or virtual GPU requests for workloads that do not need an entire physical GPU.
-
-Code scope:
-
-- Add a HAMi package/provider path that maps product packages to HAMi-compatible DRA `DeviceClass` and capacity semantics.
-- Extend the package catalog to express vGPU requirements such as GPU memory and optional GPU core percentage without exposing raw user selectors.
-- Add examples for shared inference workloads that request GPU memory instead of a full card.
-- Surface vGPU allocation information from `ResourceClaim.status.devices[*].consumedCapacity` when available.
-- Keep HAMi integration optional so whole-GPU DRA clusters can continue using standard DRA device classes.
-
-Blog focus:
-
-- Why whole-GPU allocation wastes capacity for many inference and notebook workloads.
-- Why HAMi does not conflict with DRA in this platform model: DRA is the Kubernetes allocation contract, HAMi is the GPU sharing provider underneath that contract.
-- What HAMi owns: fine-grained GPU scheduling, device allocation, and in-container isolation.
-- What the runtime owns: product contract, API validation, status, and tenant-facing semantics.
 
 ### 21. Reliable Serverless Execution
 

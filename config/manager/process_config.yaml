@@ -61,6 +61,17 @@ data:
           deviceClassName: "nvidia-rtx-3080"
           claimRequestName: "gpu"
           count: 2
+      - id: "gpu-hami-10g-50c-cpu4-mem16g"
+        specName: "gpu.hami.10g.50c.4c.16g"
+        cpu: "4"
+        memory: "16Gi"
+        gpu: 1
+        virtualGPU:
+          provider: "hami"
+          memory: "10Gi"
+          cores: 50
+        allocation:
+          claimRequestName: "gpu"
     serverless:
       url: "nats://nats.messaging.svc.cluster.local:4222"
       subjectPrefix: "runtime.serverless"

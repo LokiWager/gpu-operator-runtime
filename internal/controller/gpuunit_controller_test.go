@@ -311,6 +311,56 @@ func TestReconcileInstanceGPUUnitCreatesDRAClaimAndClaimBackedPod(t *testing.T) 
 	}
 }
 
+func TestDesiredUnitDRAResourceClaimIncludesHAMiCapacity(t *testing.T) {
+	instance := runtimev1alpha1.GPUUnit{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "demo-hami",
+			Namespace: runtimev1alpha1.DefaultInstanceNamespace,
+		},
+		Spec: runtimev1alpha1.GPUUnitSpec{
+			PackageID: "gpu-hami-10g-50c",
+			SpecName:  "gpu.hami.10g.50c.4c.16g",
+			Image:     "pytorch:2.6",
+			CPU:       "4",
+			Memory:    "16Gi",
+			GPU:       1,
+			Allocation: runtimev1alpha1.GPUUnitAllocationSpec{
+				DeviceClassName:  "hami-core-gpu.project-hami.io",
+				ClaimName:        "unit-demo-hami-gpu",
+				ClaimRequestName: runtimev1alpha1.UnitDRAClaimRequestName,
+				Count:            1,
+				Capacity: map[string]string{
+					"memory": "10Gi",
+					"cores":  "50",
+				},
+			},
+		},
+	}
+
+	claim, err := desiredUnitDRAResourceClaim(instance)
+	if err != nil {
+		t.Fatalf("desired resource claim: %v", err)
+	}
+	if len(claim.Spec.Devices.Requests) != 1 || claim.Spec.Devices.Requests[0].Exactly == nil {
+		t.Fatalf("expected exact DRA request, got %+v", claim.Spec.Devices.Requests)
+	}
+	exact := claim.Spec.Devices.Requests[0].Exactly
+	if exact.DeviceClassName != "hami-core-gpu.project-hami.io" || exact.Count != 1 {
+		t.Fatalf("expected hami device class/count, got %+v", exact)
+	}
+	if exact.Capacity == nil {
+		t.Fatalf("expected capacity requests, got nil")
+	}
+	memoryCapacity := exact.Capacity.Requests[resourcev1.QualifiedName("memory")]
+	if memoryCapacity.String() != "10Gi" {
+		t.Fatalf("expected memory capacity 10Gi, got %+v", exact.Capacity.Requests)
+	}
+	coresCapacity := exact.Capacity.Requests[resourcev1.QualifiedName("cores")]
+	if coresCapacity.String() != "50" {
+		t.Fatalf("expected cores capacity 50, got %+v", exact.Capacity.Requests)
+	}
+}
+
 func TestReconcileInstanceGPUUnitMountsReadyStorage(t *testing.T) {
 	scheme := newControllerScheme(t)
 

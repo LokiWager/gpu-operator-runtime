@@ -112,6 +112,46 @@ func TestNormalizeCreateGPUUnitRequest_ExpandsPackageToDRAAllocation(t *testing.
 	}
 }
 
+func TestNormalizeCreateGPUUnitRequest_ExpandsHAMiVirtualGPUPackage(t *testing.T) {
+	catalog, err := RuntimePackageCatalog{{
+		ID:       "gpu-hami-10g-50c",
+		SpecName: "gpu.hami.10g.50c.4c.16g",
+		CPU:      "4",
+		Memory:   "16Gi",
+		GPU:      1,
+		VirtualGPU: RuntimePackageVirtualGPUSpec{
+			Provider: RuntimePackageVirtualGPUProviderHAMi,
+			Memory:   "10Gi",
+			Cores:    50,
+		},
+	}}.Normalized()
+	if err != nil {
+		t.Fatalf("normalize package catalog: %v", err)
+	}
+
+	req, err := NormalizeCreateGPUUnitRequestWithCatalog(CreateGPUUnitRequest{
+		OperationID: "gpu-op-hami",
+		Name:        "hami-worker",
+		PackageID:   "gpu-hami-10g-50c",
+		Image:       "pytorch:2.6",
+	}, catalog)
+	if err != nil {
+		t.Fatalf("normalize create gpu unit request: %v", err)
+	}
+	if req.SpecName != "gpu.hami.10g.50c.4c.16g" || req.CPU != "4" || req.Memory != "16Gi" || req.GPU != 1 {
+		t.Fatalf("expected hami package resources, got spec=%s cpu=%s memory=%s gpu=%d", req.SpecName, req.CPU, req.Memory, req.GPU)
+	}
+	if req.Allocation.DeviceClassName != HAMiDRADeviceClassName || req.Allocation.Count != 1 {
+		t.Fatalf("expected hami DRA allocation, got %+v", req.Allocation)
+	}
+	if req.Allocation.ClaimName != "unit-hami-worker-gpu" {
+		t.Fatalf("expected generated claim name, got %+v", req.Allocation)
+	}
+	if req.Allocation.Capacity[HAMiDRACapacityMemoryKey] != "10Gi" || req.Allocation.Capacity[HAMiDRACapacityCoresKey] != "50" {
+		t.Fatalf("expected hami capacity, got %+v", req.Allocation.Capacity)
+	}
+}
+
 func TestNormalizeCreateGPUUnitRequest_RejectsPackageResourceOverride(t *testing.T) {
 	_, err := NormalizeCreateGPUUnitRequestWithCatalog(CreateGPUUnitRequest{
 		OperationID: "gpu-op-package-conflict",

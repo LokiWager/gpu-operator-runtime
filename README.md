@@ -2,10 +2,12 @@
 
 Teaching-oriented Golang + Kubernetes project for building a GPU runtime control plane.
 
-The current chapter moves runtime instance creation to DRA-backed package allocation:
+The current chapter keeps runtime instance creation on DRA-backed packages and adds an optional HAMi virtual GPU package path:
 
 - create requests can pass a controlled `packageID`, for example `gpu-rtx3080-2x-cpu10-mem40g`
-- the package expands into CPU, memory, GPU count, and a DRA `DeviceClass`
+- the package expands into Kubernetes CPU/memory requests plus a DRA GPU allocation contract
+- whole-GPU packages reference a normal GPU `DeviceClass`
+- HAMi packages map `virtualGPU.memory` and `virtualGPU.cores` into DRA `capacity.requests`
 - the controller creates a GPUUnit-owned `ResourceClaim` and mounts it into the Pod through `pod.spec.resourceClaims`
 - the runtime does not set traditional `nvidia.com/gpu` requests on the container
 - `GET /api/v1/operator/inventory` exposes DRA `ResourceClaim` and `ResourceSlice` visibility alongside node and quota context
@@ -22,7 +24,7 @@ The runtime still does not become a scheduler. It validates product-level intent
 
 The main chapter path expects Kubernetes Dynamic Resource Allocation and a GPU DRA driver.
 
-For the tutorial package configured in `config/local/runtime-api.yaml`, the cluster should expose a DRA `DeviceClass` named:
+For the whole-GPU tutorial package configured in `config/local/runtime-api.yaml`, the cluster should expose a DRA `DeviceClass` named:
 
 ```text
 nvidia-rtx-3080
@@ -31,6 +33,96 @@ nvidia-rtx-3080
 The driver should also publish `ResourceSlice` objects that make matching devices visible to the scheduler.
 
 `DeviceClass` is a Kubernetes API object and should be managed by ops through YAML/GitOps or a controlled admin API. `ResourceSlice` objects are driver-published capacity; the runtime should observe them, not create them for user requests.
+
+For the HAMi virtual GPU package, install HAMi with native DRA support so the cluster exposes:
+
+```text
+hami-core-gpu.project-hami.io
+```
+
+The runtime package catalog then requests per-device consumable GPU capacity through DRA:
+
+```yaml
+packages:
+  - id: "gpu-hami-10g-50c-cpu4-mem16g"
+    specName: "gpu.hami.10g.50c.4c.16g"
+    cpu: "4"
+    memory: "16Gi"
+    gpu: 1
+    virtualGPU:
+      provider: "hami"
+      memory: "10Gi"
+      cores: 50
+    allocation:
+      claimRequestName: "gpu"
+```
+
+During catalog normalization, this expands into a DRA allocation for `hami-core-gpu.project-hami.io` with `capacity.requests.memory=10Gi` and `capacity.requests.cores=50`. Kubernetes still owns CPU and Pod memory placement through ordinary container resource requests; HAMi owns GPU memory/core sharing underneath the DRA allocation contract.
+
+### HAMi DRA cluster operations
+
+The runtime repository does not install HAMi itself. In a real cluster, ops should manage HAMi DRA with Helm or GitOps before enabling HAMi packages in `runtime-api.yaml`.
+
+Check cluster prerequisites first:
+
+- Kubernetes version supports DRA consumable capacity
+- CDI is enabled in the container runtime
+- NVIDIA drivers and NVIDIA container runtime integration are ready
+- `runtime-instance` and other runtime namespaces already exist
+
+Install cert-manager because the HAMi DRA webhook uses TLS certificates:
+
+```bash
+helm repo add jetstack https://charts.jetstack.io
+helm repo update jetstack
+
+helm upgrade --install cert-manager jetstack/cert-manager \
+  --namespace cert-manager \
+  --create-namespace \
+  --set crds.enabled=true
+```
+
+Install HAMi DRA:
+
+```bash
+helm repo add hami-dra https://project-hami.github.io/HAMi-DRA
+helm repo update hami-dra
+
+helm upgrade --install hami-dra hami-dra/hami-dra
+```
+
+If the NVIDIA driver is pre-installed on the host instead of managed by GPU Operator/container driver pods, install HAMi DRA with:
+
+```bash
+helm upgrade --install hami-dra hami-dra/hami-dra \
+  --set drivers.nvidia.containerDriver=false
+```
+
+Verify that HAMi DRA is running and publishing DRA capacity:
+
+```bash
+kubectl get pods -n hami-system
+kubectl get resourceslices
+kubectl get deviceclasses.resource.k8s.io
+```
+
+The expected DRA driver and DeviceClass for this chapter are:
+
+```text
+hami-core-gpu.project-hami.io
+```
+
+After creating a runtime instance from `gpu-hami-10g-50c-cpu4-mem16g`, verify the generated claim and observed allocation:
+
+```bash
+kubectl get resourceclaims -n runtime-instance
+kubectl get resourceclaim unit-demo-instance-gpu -n runtime-instance -o yaml
+kubectl get gpuunit demo-instance -n runtime-instance -o yaml
+```
+
+The generated `ResourceClaim` should contain `capacity.requests.memory` and `capacity.requests.cores`. When the claim is allocated, `GPUUnit.status.dra.devices[*].consumedCapacity` should reflect the consumed virtual GPU capacity.
+
+This chapter intentionally uses HAMi DRA native mode. Do not also add traditional `nvidia.com/gpu`, `nvidia.com/gpumem`, or `nvidia.com/gpucores` container requests to the same workload.
 
 The runtime still reads `nvidia.com/gpu` node capacity for health and telemetry context. In practice, that requires a cluster that already provides:
 
@@ -365,9 +457,38 @@ packages:
       deviceClassName: "nvidia-rtx-3080"
       claimRequestName: "gpu"
       count: 2
+  - id: "gpu-hami-10g-50c-cpu4-mem16g"
+    specName: "gpu.hami.10g.50c.4c.16g"
+    cpu: "4"
+    memory: "16Gi"
+    gpu: 1
+    virtualGPU:
+      provider: "hami"
+      memory: "10Gi"
+      cores: 50
+    allocation:
+      claimRequestName: "gpu"
 ```
 
-It expands into `cpu: "10"`, `memory: "40Gi"`, `gpu: 2`, and a DRA allocation that references `DeviceClass` `nvidia-rtx-3080`. The controller creates a per-unit `ResourceClaim` and the Pod references that claim. There is no non-DRA create fallback in this chapter; callers must use a configured package or an internally trusted DRA allocation.
+The first package expands into `cpu: "10"`, `memory: "40Gi"`, `gpu: 2`, and a DRA allocation that references `DeviceClass` `nvidia-rtx-3080`.
+
+The second package expands into ordinary Kubernetes `cpu: "4"` and `memory: "16Gi"` container resources plus a HAMi DRA allocation equivalent to:
+
+```yaml
+devices:
+  requests:
+    - name: gpu
+      exactly:
+        deviceClassName: hami-core-gpu.project-hami.io
+        allocationMode: ExactCount
+        count: 1
+        capacity:
+          requests:
+            memory: 10Gi
+            cores: "50"
+```
+
+The controller creates a per-unit `ResourceClaim` and the Pod references that claim. There is no non-DRA create fallback in this chapter; callers must use a configured package or an internally trusted DRA allocation.
 
 ### 4. Inspect the active runtime
 

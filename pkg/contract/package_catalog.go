@@ -3,12 +3,25 @@ package contract
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/util/validation"
 
 	runtimev1alpha1 "github.com/loki/gpu-operator-runtime/api/v1alpha1"
+)
+
+const (
+	// RuntimePackageVirtualGPUProviderHAMi enables HAMi's native DRA provider path.
+	RuntimePackageVirtualGPUProviderHAMi = "hami"
+
+	// HAMiDRADeviceClassName is the DeviceClass exposed by HAMi DRA native mode.
+	HAMiDRADeviceClassName = "hami-core-gpu.project-hami.io"
+
+	// HAMiDRACapacityMemoryKey and HAMiDRACapacityCoresKey are the capacity keys HAMi consumes through DRA.
+	HAMiDRACapacityMemoryKey = "memory"
+	HAMiDRACapacityCoresKey  = "cores"
 )
 
 // RuntimePackageCatalog is the ops-managed list of runtime packages loaded from YAML.
@@ -21,7 +34,15 @@ type RuntimePackageSpec struct {
 	CPU        string                                `json:"cpu" yaml:"cpu"`
 	Memory     string                                `json:"memory" yaml:"memory"`
 	GPU        int32                                 `json:"gpu" yaml:"gpu"`
+	VirtualGPU RuntimePackageVirtualGPUSpec          `json:"virtualGPU,omitempty" yaml:"virtualGPU,omitempty"`
 	Allocation runtimev1alpha1.GPUUnitAllocationSpec `json:"allocation" yaml:"allocation"`
+}
+
+// RuntimePackageVirtualGPUSpec describes provider-specific virtual GPU intent in the ops catalog.
+type RuntimePackageVirtualGPUSpec struct {
+	Provider string `json:"provider,omitempty" yaml:"provider,omitempty"`
+	Memory   string `json:"memory,omitempty" yaml:"memory,omitempty"`
+	Cores    int32  `json:"cores,omitempty" yaml:"cores,omitempty"`
 }
 
 // Normalized validates and canonicalizes the package catalog loaded from configuration.
@@ -77,7 +98,14 @@ func (p RuntimePackageSpec) Normalized() (RuntimePackageSpec, error) {
 		return RuntimePackageSpec{}, &ValidationError{Message: fmt.Sprintf("packageID %q gpu should be > 0", p.ID)}
 	}
 
-	allocation, err := normalizePackageDRAAllocation(p.ID, p.Allocation)
+	virtualGPU, allocation, err := normalizeRuntimePackageVirtualGPU(p.ID, p.VirtualGPU, p.Allocation)
+	if err != nil {
+		return RuntimePackageSpec{}, err
+	}
+	p.VirtualGPU = virtualGPU
+	p.Allocation = allocation
+
+	allocation, err = normalizePackageDRAAllocation(p.ID, p.Allocation)
 	if err != nil {
 		return RuntimePackageSpec{}, err
 	}
@@ -135,6 +163,72 @@ func ExpandRuntimePackage(req CreateGPUUnitRequest, catalog RuntimePackageCatalo
 	req.GPU = pkg.GPU
 	req.Allocation = cloneAllocation(pkg.Allocation)
 	return req, nil
+}
+
+func normalizeRuntimePackageVirtualGPU(packageID string, virtualGPU RuntimePackageVirtualGPUSpec, allocation runtimev1alpha1.GPUUnitAllocationSpec) (RuntimePackageVirtualGPUSpec, runtimev1alpha1.GPUUnitAllocationSpec, error) {
+	virtualGPU.Provider = strings.ToLower(strings.TrimSpace(virtualGPU.Provider))
+	virtualGPU.Memory = strings.TrimSpace(virtualGPU.Memory)
+
+	if virtualGPU.Provider == "" {
+		if virtualGPU.Memory != "" || virtualGPU.Cores != 0 {
+			return RuntimePackageVirtualGPUSpec{}, runtimev1alpha1.GPUUnitAllocationSpec{}, &ValidationError{Message: fmt.Sprintf("packageID %q virtualGPU provider is required", packageID)}
+		}
+		return virtualGPU, allocation, nil
+	}
+	if virtualGPU.Provider != RuntimePackageVirtualGPUProviderHAMi {
+		return RuntimePackageVirtualGPUSpec{}, runtimev1alpha1.GPUUnitAllocationSpec{}, &ValidationError{Message: fmt.Sprintf("packageID %q virtualGPU provider %q is not supported", packageID, virtualGPU.Provider)}
+	}
+	if virtualGPU.Memory == "" {
+		return RuntimePackageVirtualGPUSpec{}, runtimev1alpha1.GPUUnitAllocationSpec{}, &ValidationError{Message: fmt.Sprintf("packageID %q hami virtualGPU memory is required", packageID)}
+	}
+	memoryQuantity, err := resource.ParseQuantity(virtualGPU.Memory)
+	if err != nil {
+		return RuntimePackageVirtualGPUSpec{}, runtimev1alpha1.GPUUnitAllocationSpec{}, &ValidationError{Message: fmt.Sprintf("packageID %q hami virtualGPU memory %q is invalid: %v", packageID, virtualGPU.Memory, err)}
+	}
+	if memoryQuantity.Sign() <= 0 {
+		return RuntimePackageVirtualGPUSpec{}, runtimev1alpha1.GPUUnitAllocationSpec{}, &ValidationError{Message: fmt.Sprintf("packageID %q hami virtualGPU memory should be > 0", packageID)}
+	}
+	if virtualGPU.Cores < 0 || virtualGPU.Cores > 100 {
+		return RuntimePackageVirtualGPUSpec{}, runtimev1alpha1.GPUUnitAllocationSpec{}, &ValidationError{Message: fmt.Sprintf("packageID %q hami virtualGPU cores should be between 1 and 100 when configured", packageID)}
+	}
+
+	allocation.DeviceClassName = strings.TrimSpace(allocation.DeviceClassName)
+	if allocation.DeviceClassName == "" {
+		allocation.DeviceClassName = HAMiDRADeviceClassName
+	}
+	if allocation.Count == 0 {
+		allocation.Count = 1
+	}
+	if err := mergePackageDRACapacity(packageID, &allocation, HAMiDRACapacityMemoryKey, virtualGPU.Memory, "virtualGPU.memory"); err != nil {
+		return RuntimePackageVirtualGPUSpec{}, runtimev1alpha1.GPUUnitAllocationSpec{}, err
+	}
+	if virtualGPU.Cores > 0 {
+		cores := strconv.FormatInt(int64(virtualGPU.Cores), 10)
+		if err := mergePackageDRACapacity(packageID, &allocation, HAMiDRACapacityCoresKey, cores, "virtualGPU.cores"); err != nil {
+			return RuntimePackageVirtualGPUSpec{}, runtimev1alpha1.GPUUnitAllocationSpec{}, err
+		}
+	}
+	return virtualGPU, allocation, nil
+}
+
+func mergePackageDRACapacity(packageID string, allocation *runtimev1alpha1.GPUUnitAllocationSpec, key, value, sourceField string) error {
+	if allocation.Capacity == nil {
+		allocation.Capacity = map[string]string{}
+	}
+	for existingKey, existingValue := range allocation.Capacity {
+		if strings.TrimSpace(existingKey) != key {
+			continue
+		}
+		normalizedValue := strings.TrimSpace(existingValue)
+		if normalizedValue != value {
+			return &ValidationError{Message: fmt.Sprintf("packageID %q dra capacity %q=%q conflicts with %s %q", packageID, key, normalizedValue, sourceField, value)}
+		}
+		if existingKey != key {
+			delete(allocation.Capacity, existingKey)
+		}
+	}
+	allocation.Capacity[key] = value
+	return nil
 }
 
 func normalizePackageDRAAllocation(packageID string, allocation runtimev1alpha1.GPUUnitAllocationSpec) (runtimev1alpha1.GPUUnitAllocationSpec, error) {
