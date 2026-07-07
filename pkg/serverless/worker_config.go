@@ -22,6 +22,8 @@ const (
 	EnvWorkerConsumerName  = "SERVERLESS_WORKER_CONSUMER_NAME"
 	EnvHeartbeatInterval   = "SERVERLESS_HEARTBEAT_INTERVAL"
 	EnvDispatchAckWait     = "SERVERLESS_DISPATCH_ACK_WAIT"
+	EnvDispatchMaxDeliver  = "SERVERLESS_DISPATCH_MAX_DELIVER"
+	EnvDispatchBackoff     = "SERVERLESS_DISPATCH_BACKOFF"
 	EnvFrameworkSocketPath = "SERVERLESS_FRAMEWORK_SOCKET_PATH"
 	EnvFrameworkInvokePath = "SERVERLESS_FRAMEWORK_INVOKE_PATH"
 	EnvFrameworkHealthPath = "SERVERLESS_FRAMEWORK_HEALTH_PATH"
@@ -30,9 +32,10 @@ const (
 
 // WorkerSidecarConfig captures the platform-managed sidecar image and pod-local defaults injected into each serverless worker.
 type WorkerSidecarConfig struct {
-	Image             string `yaml:"image"`
-	HealthPort        int32  `yaml:"healthPort"`
-	HeartbeatInterval string `yaml:"heartbeatInterval"`
+	Image             string      `yaml:"image"`
+	HealthPort        int32       `yaml:"healthPort"`
+	HeartbeatInterval string      `yaml:"heartbeatInterval"`
+	DispatchRetry     RetryPolicy `yaml:"dispatchRetry"`
 }
 
 // DefaultWorkerSidecarConfig returns the baseline worker-sidecar injection settings.
@@ -41,6 +44,7 @@ func DefaultWorkerSidecarConfig() WorkerSidecarConfig {
 		Image:             DefaultWorkerSidecarImage,
 		HealthPort:        DefaultWorkerSidecarHealthPort,
 		HeartbeatInterval: DefaultWorkerSidecarHeartbeatInterval,
+		DispatchRetry:     DefaultRetryPolicy(),
 	}
 }
 
@@ -60,6 +64,11 @@ func (c WorkerSidecarConfig) Normalized() (WorkerSidecarConfig, error) {
 	if _, err := time.ParseDuration(cfg.HeartbeatInterval); err != nil {
 		return WorkerSidecarConfig{}, fmt.Errorf("parse heartbeatInterval %q: %w", cfg.HeartbeatInterval, err)
 	}
+	dispatchRetry, err := cfg.DispatchRetry.Normalized()
+	if err != nil {
+		return WorkerSidecarConfig{}, fmt.Errorf("normalize dispatchRetry: %w", err)
+	}
+	cfg.DispatchRetry = dispatchRetry
 	return cfg, nil
 }
 

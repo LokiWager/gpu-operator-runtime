@@ -25,3 +25,9 @@ serverlessWorker:
   image: "ghcr.io/lokiwager/gpu-runtime-serverless-sidecar:latest"
   healthPort: 8091
   heartbeatInterval: "15s"
+  dispatchRetry:
+    maxDeliver: 5
+    backoff:
+      - "2s"
+      - "10s"
+      - "30s"

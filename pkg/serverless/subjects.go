@@ -50,6 +50,11 @@ func MetricsSubject(prefix, requestID string) string {
 	return fmt.Sprintf("%s.metrics.%s", NormalizeSubjectPrefix(prefix), requestID)
 }
 
+// DeadLetterSubject returns the NATS subject carrying terminal queue failures for one subject family.
+func DeadLetterSubject(prefix string, source DeadLetterSource, requestID string) string {
+	return fmt.Sprintf("%s.dlq.%s.%s", NormalizeSubjectPrefix(prefix), normalizeDispatchToken(string(source)), normalizeDispatchToken(requestID))
+}
+
 // StreamSubjects returns the wildcard subject bindings required for the chapter's queue-first ingress stream.
 func StreamSubjects(prefix string) []string {
 	base := NormalizeSubjectPrefix(prefix)
@@ -58,6 +63,7 @@ func StreamSubjects(prefix string) []string {
 		fmt.Sprintf("%s.dispatch.*.*", base),
 		fmt.Sprintf("%s.result.*", base),
 		fmt.Sprintf("%s.metrics.*", base),
+		fmt.Sprintf("%s.dlq.*.*", base),
 	}
 }
 

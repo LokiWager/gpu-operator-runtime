@@ -236,6 +236,8 @@ SERVERLESS_STREAM_NAME=RUNTIME_SERVERLESS \
 SERVERLESS_WORKER_NAME=sd-webui-template \
 SERVERLESS_WORKER_NAMESPACE=runtime-instance \
 SERVERLESS_REQUEST_ID=sd-webui \
+SERVERLESS_DISPATCH_MAX_DELIVER=5 \
+SERVERLESS_DISPATCH_BACKOFF=2s,10s,30s \
 SERVERLESS_FRAMEWORK_SOCKET_PATH=/tmp/serverless-framework/framework.sock \
 SERVERLESS_FRAMEWORK_INVOKE_PATH=/invoke \
 SERVERLESS_FRAMEWORK_HEALTH_PATH=/healthz \
@@ -265,6 +267,65 @@ serverless:
     podLabels:
       app.kubernetes.io/name: "nats"
 ```
+
+The serverless stream now includes dead-letter subjects:
+
+```text
+runtime.serverless.dlq.<source>.<serverlessRequestID>
+```
+
+The dedicated activator controls invocation and metrics retry policy:
+
+```yaml
+consumerName: "runtime-activator"
+metricsConsumerName: "runtime-activator-metrics"
+workerReadyWait: "2m"
+workerPollInterval: "2s"
+lifecycleInterval: "15s"
+maxPendingWorkersPerRequestID: 1
+invocationRetry:
+  maxDeliver: 5
+  backoff:
+    - "2s"
+    - "10s"
+    - "30s"
+metricsRetry:
+  maxDeliver: 5
+  backoff:
+    - "2s"
+    - "10s"
+    - "30s"
+```
+
+The controller injects worker dispatch retry policy into the sidecar:
+
+```yaml
+serverlessWorker:
+  image: "ghcr.io/lokiwager/gpu-runtime-serverless-sidecar:latest"
+  healthPort: 8091
+  heartbeatInterval: "15s"
+  dispatchRetry:
+    maxDeliver: 5
+    backoff:
+      - "2s"
+      - "10s"
+      - "30s"
+```
+
+The result-store consumer has its own retry policy for ScyllaDB write failures:
+
+```yaml
+consumerName: "runtime-result-store"
+ackWait: "30s"
+retry:
+  maxDeliver: 5
+  backoff:
+    - "2s"
+    - "10s"
+    - "30s"
+```
+
+All queue publishes use stable message IDs by invocation, dispatch, result, or DLQ identity. That makes JetStream duplicate detection part of the idempotency story, while ScyllaDB result writes remain upsert-friendly for duplicate result deliveries.
 
 If `serverless.url` points to a Kubernetes `*.svc` hostname and `networkPolicyTarget` is missing, the runtime controller now treats that as a configuration error instead of silently creating a Pod that cannot reach NATS.
 

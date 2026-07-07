@@ -45,6 +45,7 @@ func TestRecordFromResultStoresSmallBodyInline(t *testing.T) {
 		InvocationID:        "inv-1",
 		ServerlessRequestID: "sd-webui",
 		Mode:                serverless.InvocationModeAsync,
+		State:               serverless.InvocationStateSucceeded,
 		StatusCode:          200,
 		Headers:             map[string]string{"x-model": "demo"},
 		Body:                []byte(`{"ok":true}`),
@@ -61,6 +62,9 @@ func TestRecordFromResultStoresSmallBodyInline(t *testing.T) {
 	}
 	if record.StartedAt != completedAt {
 		t.Fatalf("expected startedAt fallback to completedAt, got %s", record.StartedAt)
+	}
+	if record.State != serverless.InvocationStateSucceeded {
+		t.Fatalf("expected succeeded state, got %+v", record)
 	}
 }
 
@@ -81,5 +85,23 @@ func TestRecordFromResultTruncatesLargeBody(t *testing.T) {
 	}
 	if record.BodyBytes != int64(len(`{"large":true}`)) {
 		t.Fatalf("expected original body byte count, got %d", record.BodyBytes)
+	}
+}
+
+func TestRecordFromResultDefaultsFailureState(t *testing.T) {
+	record, err := RecordFromResult(serverless.InvocationResultMessage{
+		InvocationID:        "inv-failed",
+		ServerlessRequestID: "sd-webui",
+		Error:               "framework unavailable",
+		FailureClass:        serverless.InvocationFailureFrameworkError,
+	}, 64)
+	if err != nil {
+		t.Fatalf("convert result: %v", err)
+	}
+	if record.State != serverless.InvocationStateFailed {
+		t.Fatalf("expected failed state, got %+v", record)
+	}
+	if record.FailureClass != serverless.InvocationFailureFrameworkError {
+		t.Fatalf("expected framework failure class, got %+v", record)
 	}
 }

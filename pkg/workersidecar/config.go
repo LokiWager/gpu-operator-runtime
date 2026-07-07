@@ -26,6 +26,7 @@ type Config struct {
 	FrameworkHealthPath string
 	HealthPort          int32
 	DispatchAckWait     string
+	DispatchRetry       serverless.RetryPolicy
 }
 
 // LoadConfigFromEnv builds one worker-sidecar config from the injected environment variables.
@@ -45,6 +46,7 @@ func LoadConfigFromEnv() (Config, error) {
 		FrameworkInvokePath: os.Getenv(serverless.EnvFrameworkInvokePath),
 		FrameworkHealthPath: os.Getenv(serverless.EnvFrameworkHealthPath),
 		DispatchAckWait:     defaultEnv(serverless.EnvDispatchAckWait, defaultDispatchAckWait),
+		DispatchRetry:       serverless.RetryPolicyFromEnv(os.Getenv(serverless.EnvDispatchMaxDeliver), os.Getenv(serverless.EnvDispatchBackoff)),
 	}
 
 	return cfg.Normalized()
@@ -108,6 +110,11 @@ func (c Config) Normalized() (Config, error) {
 	if _, err := time.ParseDuration(cfg.DispatchAckWait); err != nil {
 		return Config{}, fmt.Errorf("parse dispatch ack wait %q: %w", cfg.DispatchAckWait, err)
 	}
+	dispatchRetry, err := cfg.DispatchRetry.Normalized()
+	if err != nil {
+		return Config{}, fmt.Errorf("normalize dispatch retry: %w", err)
+	}
+	cfg.DispatchRetry = dispatchRetry
 
 	return cfg, nil
 }
@@ -120,6 +127,19 @@ func (c Config) HeartbeatIntervalDuration() (time.Duration, error) {
 // DispatchAckWaitDuration parses the queue ack wait window used by the worker dispatch consumer.
 func (c Config) DispatchAckWaitDuration() (time.Duration, error) {
 	return time.ParseDuration(c.DispatchAckWait)
+}
+
+// DispatchConsumerOptions returns the durable consumer policy for this worker's dispatch subject.
+func (c Config) DispatchConsumerOptions() (serverless.ConsumerOptions, error) {
+	ackWait, err := c.DispatchAckWaitDuration()
+	if err != nil {
+		return serverless.ConsumerOptions{}, err
+	}
+	return serverless.ConsumerOptions{
+		AckWait:          ackWait,
+		Retry:            c.DispatchRetry,
+		DeadLetterSource: serverless.DeadLetterSourceDispatch,
+	}, nil
 }
 
 func defaultEnv(key, fallback string) string {

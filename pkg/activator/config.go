@@ -11,32 +11,39 @@ import (
 )
 
 const (
-	defaultConsumerName        = "runtime-activator"
-	defaultMetricsConsumerName = "runtime-activator-metrics"
-	defaultWorkerReadyWait     = "2m"
-	defaultWorkerPoll          = "2s"
-	defaultLifecycleInterval   = "15s"
+	defaultConsumerName                  = "runtime-activator"
+	defaultMetricsConsumerName           = "runtime-activator-metrics"
+	defaultWorkerReadyWait               = "2m"
+	defaultWorkerPoll                    = "2s"
+	defaultLifecycleInterval             = "15s"
+	defaultMaxPendingWorkersPerRequestID = 1
 )
 
 // Config captures the local process settings for the dedicated serverless activator.
 type Config struct {
-	Serverless          serverless.NATSConfig `yaml:"serverless"`
-	ConsumerName        string                `yaml:"consumerName"`
-	MetricsConsumerName string                `yaml:"metricsConsumerName"`
-	WorkerReadyWait     string                `yaml:"workerReadyWait"`
-	WorkerPollInterval  string                `yaml:"workerPollInterval"`
-	LifecycleInterval   string                `yaml:"lifecycleInterval"`
+	Serverless                    serverless.NATSConfig  `yaml:"serverless"`
+	ConsumerName                  string                 `yaml:"consumerName"`
+	MetricsConsumerName           string                 `yaml:"metricsConsumerName"`
+	WorkerReadyWait               string                 `yaml:"workerReadyWait"`
+	WorkerPollInterval            string                 `yaml:"workerPollInterval"`
+	LifecycleInterval             string                 `yaml:"lifecycleInterval"`
+	InvocationRetry               serverless.RetryPolicy `yaml:"invocationRetry"`
+	MetricsRetry                  serverless.RetryPolicy `yaml:"metricsRetry"`
+	MaxPendingWorkersPerRequestID int                    `yaml:"maxPendingWorkersPerRequestID"`
 }
 
 // DefaultConfig returns the baseline activator settings.
 func DefaultConfig() Config {
 	return Config{
-		Serverless:          serverless.DefaultNATSConfig(),
-		ConsumerName:        defaultConsumerName,
-		MetricsConsumerName: defaultMetricsConsumerName,
-		WorkerReadyWait:     defaultWorkerReadyWait,
-		WorkerPollInterval:  defaultWorkerPoll,
-		LifecycleInterval:   defaultLifecycleInterval,
+		Serverless:                    serverless.DefaultNATSConfig(),
+		ConsumerName:                  defaultConsumerName,
+		MetricsConsumerName:           defaultMetricsConsumerName,
+		WorkerReadyWait:               defaultWorkerReadyWait,
+		WorkerPollInterval:            defaultWorkerPoll,
+		LifecycleInterval:             defaultLifecycleInterval,
+		InvocationRetry:               serverless.DefaultRetryPolicy(),
+		MetricsRetry:                  serverless.DefaultRetryPolicy(),
+		MaxPendingWorkersPerRequestID: defaultMaxPendingWorkersPerRequestID,
 	}
 }
 
@@ -98,6 +105,20 @@ func (c Config) Normalized() (Config, error) {
 		return Config{}, fmt.Errorf("parse lifecycleInterval %q: %w", cfg.LifecycleInterval, err)
 	}
 
+	invocationRetry, err := cfg.InvocationRetry.Normalized()
+	if err != nil {
+		return Config{}, fmt.Errorf("normalize invocationRetry: %w", err)
+	}
+	cfg.InvocationRetry = invocationRetry
+	metricsRetry, err := cfg.MetricsRetry.Normalized()
+	if err != nil {
+		return Config{}, fmt.Errorf("normalize metricsRetry: %w", err)
+	}
+	cfg.MetricsRetry = metricsRetry
+	if cfg.MaxPendingWorkersPerRequestID <= 0 {
+		cfg.MaxPendingWorkersPerRequestID = defaultMaxPendingWorkersPerRequestID
+	}
+
 	return cfg, nil
 }
 
@@ -122,6 +143,24 @@ func (c Config) LifecycleIntervalDuration() time.Duration {
 // AckWaitDuration returns the durable queue ack budget required for worker creation and dispatch publication.
 func (c Config) AckWaitDuration() time.Duration {
 	return c.WorkerReadyWaitDuration() + 15*time.Second
+}
+
+// InvocationConsumerOptions returns the durable consumer policy for invocation ingress.
+func (c Config) InvocationConsumerOptions() serverless.ConsumerOptions {
+	return serverless.ConsumerOptions{
+		AckWait:          c.AckWaitDuration(),
+		Retry:            c.InvocationRetry,
+		DeadLetterSource: serverless.DeadLetterSourceInvocation,
+	}
+}
+
+// MetricsConsumerOptions returns the durable consumer policy for worker metrics.
+func (c Config) MetricsConsumerOptions() serverless.ConsumerOptions {
+	return serverless.ConsumerOptions{
+		AckWait:          c.AckWaitDuration(),
+		Retry:            c.MetricsRetry,
+		DeadLetterSource: serverless.DeadLetterSourceMetric,
+	}
 }
 
 func normalizeConsumerName(field, value, fallback string) (string, error) {

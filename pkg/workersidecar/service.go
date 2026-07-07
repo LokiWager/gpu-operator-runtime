@@ -2,6 +2,7 @@ package workersidecar
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -67,7 +68,7 @@ func (s *Service) Run(ctx context.Context, consumer serverless.WorkerDispatchCon
 
 	go s.heartbeatLoop(ctx)
 
-	ackWait, err := s.cfg.DispatchAckWaitDuration()
+	consumerOptions, err := s.cfg.DispatchConsumerOptions()
 	if err != nil {
 		return err
 	}
@@ -76,7 +77,7 @@ func (s *Service) Run(ctx context.Context, consumer serverless.WorkerDispatchCon
 		s.cfg.ConsumerName,
 		s.cfg.ServerlessRequestID,
 		s.cfg.WorkerName,
-		ackWait,
+		consumerOptions,
 		s.HandleDispatch,
 	)
 }
@@ -112,6 +113,7 @@ func (s *Service) HandleDispatch(ctx context.Context, dispatch serverless.Worker
 		WorkerName:          dispatch.WorkerName,
 		WorkerNamespace:     dispatch.WorkerNamespace,
 		Mode:                dispatch.Mode,
+		State:               serverless.InvocationStateRunning,
 		ContentType:         dispatch.ContentType,
 		Headers:             cloneStringMap(dispatch.Headers),
 		Attributes:          cloneStringMap(dispatch.Attributes),
@@ -122,15 +124,25 @@ func (s *Service) HandleDispatch(ctx context.Context, dispatch serverless.Worker
 
 	completedAt := time.Now().UTC()
 	if err != nil {
+		statusCode := http.StatusBadGateway
+		state := serverless.InvocationStateFailed
+		failureClass := serverless.InvocationFailureFrameworkError
+		if errors.Is(err, context.DeadlineExceeded) {
+			statusCode = http.StatusGatewayTimeout
+			state = serverless.InvocationStateExpired
+			failureClass = serverless.InvocationFailureFrameworkTimeout
+		}
 		result := serverless.InvocationResultMessage{
 			Version:             serverless.InvocationVersion,
 			InvocationID:        dispatch.InvocationID,
 			ServerlessRequestID: dispatch.ServerlessRequestID,
 			Mode:                dispatch.Mode,
+			State:               state,
+			FailureClass:        failureClass,
 			ReplySubject:        dispatch.ReplySubject,
 			WorkerName:          dispatch.WorkerName,
 			WorkerNamespace:     dispatch.WorkerNamespace,
-			StatusCode:          http.StatusBadGateway,
+			StatusCode:          statusCode,
 			Error:               err.Error(),
 			StartedAt:           startedAt,
 			CompletedAt:         completedAt,
@@ -146,7 +158,7 @@ func (s *Service) HandleDispatch(ctx context.Context, dispatch serverless.Worker
 			InvocationID:        dispatch.InvocationID,
 			EventType:           serverless.WorkerMetricEventInvocationFailed,
 			Inflight:            s.inflight.Load(),
-			StatusCode:          http.StatusBadGateway,
+			StatusCode:          statusCode,
 			Error:               err.Error(),
 			ReportedAt:          completedAt,
 		})
@@ -162,6 +174,7 @@ func (s *Service) HandleDispatch(ctx context.Context, dispatch serverless.Worker
 		InvocationID:        dispatch.InvocationID,
 		ServerlessRequestID: dispatch.ServerlessRequestID,
 		Mode:                dispatch.Mode,
+		State:               serverless.InvocationStateSucceeded,
 		ReplySubject:        dispatch.ReplySubject,
 		WorkerName:          dispatch.WorkerName,
 		WorkerNamespace:     dispatch.WorkerNamespace,

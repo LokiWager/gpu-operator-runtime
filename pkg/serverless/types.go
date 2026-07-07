@@ -36,6 +36,7 @@ type InvocationMessage struct {
 	InvocationID        string            `json:"invocationID"`
 	ServerlessRequestID string            `json:"serverlessRequestID"`
 	Mode                InvocationMode    `json:"mode"`
+	State               InvocationState   `json:"state,omitempty"`
 	ContentType         string            `json:"contentType,omitempty"`
 	Headers             map[string]string `json:"headers,omitempty"`
 	Attributes          map[string]string `json:"attributes,omitempty"`
@@ -55,6 +56,7 @@ type WorkerDispatchMessage struct {
 	WorkerName          string            `json:"workerName"`
 	WorkerNamespace     string            `json:"workerNamespace"`
 	Mode                InvocationMode    `json:"mode"`
+	State               InvocationState   `json:"state,omitempty"`
 	ContentType         string            `json:"contentType,omitempty"`
 	Headers             map[string]string `json:"headers,omitempty"`
 	Attributes          map[string]string `json:"attributes,omitempty"`
@@ -74,6 +76,7 @@ type FrameworkInvocationRequest struct {
 	WorkerName          string            `json:"workerName"`
 	WorkerNamespace     string            `json:"workerNamespace"`
 	Mode                InvocationMode    `json:"mode"`
+	State               InvocationState   `json:"state,omitempty"`
 	ContentType         string            `json:"contentType,omitempty"`
 	Headers             map[string]string `json:"headers,omitempty"`
 	Attributes          map[string]string `json:"attributes,omitempty"`
@@ -93,20 +96,22 @@ type FrameworkInvocationResponse struct {
 
 // InvocationResultMessage is the durable execution result published by the worker sidecar or activator failure path.
 type InvocationResultMessage struct {
-	Version             string            `json:"version"`
-	InvocationID        string            `json:"invocationID"`
-	ServerlessRequestID string            `json:"serverlessRequestID"`
-	Mode                InvocationMode    `json:"mode"`
-	ReplySubject        string            `json:"replySubject,omitempty"`
-	WorkerName          string            `json:"workerName,omitempty"`
-	WorkerNamespace     string            `json:"workerNamespace,omitempty"`
-	StatusCode          int               `json:"statusCode,omitempty"`
-	ContentType         string            `json:"contentType,omitempty"`
-	Headers             map[string]string `json:"headers,omitempty"`
-	Body                json.RawMessage   `json:"body,omitempty"`
-	Error               string            `json:"error,omitempty"`
-	StartedAt           time.Time         `json:"startedAt,omitempty"`
-	CompletedAt         time.Time         `json:"completedAt"`
+	Version             string                 `json:"version"`
+	InvocationID        string                 `json:"invocationID"`
+	ServerlessRequestID string                 `json:"serverlessRequestID"`
+	Mode                InvocationMode         `json:"mode"`
+	State               InvocationState        `json:"state,omitempty"`
+	FailureClass        InvocationFailureClass `json:"failureClass,omitempty"`
+	ReplySubject        string                 `json:"replySubject,omitempty"`
+	WorkerName          string                 `json:"workerName,omitempty"`
+	WorkerNamespace     string                 `json:"workerNamespace,omitempty"`
+	StatusCode          int                    `json:"statusCode,omitempty"`
+	ContentType         string                 `json:"contentType,omitempty"`
+	Headers             map[string]string      `json:"headers,omitempty"`
+	Body                json.RawMessage        `json:"body,omitempty"`
+	Error               string                 `json:"error,omitempty"`
+	StartedAt           time.Time              `json:"startedAt,omitempty"`
+	CompletedAt         time.Time              `json:"completedAt"`
 }
 
 // WorkerMetricMessage is the durable worker-side event emitted to the metrics subject for lifecycle and execution tracking.
@@ -165,17 +170,17 @@ type InvocationResultPublisher interface {
 
 // InvocationConsumer continuously drains invocation messages from the durable queue.
 type InvocationConsumer interface {
-	ConsumeInvocations(ctx context.Context, durable string, ackWait time.Duration, handler func(context.Context, InvocationMessage) error) error
+	ConsumeInvocations(ctx context.Context, durable string, opts ConsumerOptions, handler func(context.Context, InvocationMessage) error) error
 }
 
 // WorkerMetricConsumer continuously drains worker lifecycle and execution metrics from the durable queue.
 type WorkerMetricConsumer interface {
-	ConsumeWorkerMetrics(ctx context.Context, durable string, ackWait time.Duration, handler func(context.Context, WorkerMetricMessage) error) error
+	ConsumeWorkerMetrics(ctx context.Context, durable string, opts ConsumerOptions, handler func(context.Context, WorkerMetricMessage) error) error
 }
 
 // InvocationResultConsumer continuously drains completed invocation results from the durable queue.
 type InvocationResultConsumer interface {
-	ConsumeInvocationResults(ctx context.Context, durable string, ackWait time.Duration, handler func(context.Context, InvocationResultMessage) error) error
+	ConsumeInvocationResults(ctx context.Context, durable string, opts ConsumerOptions, handler func(context.Context, InvocationResultMessage) error) error
 }
 
 // WorkerDispatchConsumer continuously drains worker-targeted dispatch messages for one concrete worker sidecar.
@@ -185,7 +190,7 @@ type WorkerDispatchConsumer interface {
 		durable string,
 		requestID string,
 		workerName string,
-		ackWait time.Duration,
+		opts ConsumerOptions,
 		handler func(context.Context, WorkerDispatchMessage) error,
 	) error
 }

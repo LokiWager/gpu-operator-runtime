@@ -2,6 +2,7 @@ package activator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -14,6 +15,18 @@ import (
 	"github.com/loki/gpu-operator-runtime/pkg/serverless"
 	runtimeService "github.com/loki/gpu-operator-runtime/pkg/service"
 )
+
+var errNoServerlessWorkerTemplate = errors.New("no registered GPUUnit template for serverlessRequestID")
+
+type backpressureError struct {
+	requestID string
+	pending   int
+	limit     int
+}
+
+func (e *backpressureError) Error() string {
+	return fmt.Sprintf("serverlessRequestID %q has %d pending workers, limit %d", e.requestID, e.pending, e.limit)
+}
 
 // RuntimeControl captures the runtime operations the activator needs.
 type RuntimeControl interface {
@@ -77,10 +90,10 @@ func (s *Service) Run(ctx context.Context, queue Queue) error {
 	}
 
 	runConsumer("invocation consumer", func() error {
-		return queue.ConsumeInvocations(runCtx, s.cfg.ConsumerName, s.cfg.AckWaitDuration(), s.ProcessInvocation)
+		return queue.ConsumeInvocations(runCtx, s.cfg.ConsumerName, s.cfg.InvocationConsumerOptions(), s.ProcessInvocation)
 	})
 	runConsumer("worker metrics consumer", func() error {
-		return queue.ConsumeWorkerMetrics(runCtx, s.cfg.MetricsConsumerName, s.cfg.AckWaitDuration(), s.HandleWorkerMetric)
+		return queue.ConsumeWorkerMetrics(runCtx, s.cfg.MetricsConsumerName, s.cfg.MetricsConsumerOptions(), s.HandleWorkerMetric)
 	})
 	go s.lifecycleLoop(runCtx)
 
@@ -106,17 +119,18 @@ func (s *Service) ProcessInvocation(ctx context.Context, invocation serverless.I
 
 	worker, err := s.acquireWorker(ctx, invocation.ServerlessRequestID, invocation.InvocationID)
 	if err != nil {
+		if isRetryableInvocationError(err) {
+			return err
+		}
 		result.StatusCode = http.StatusServiceUnavailable
+		result.State = serverless.InvocationStateFailed
+		result.FailureClass = classifyInvocationFailure(err)
 		result.Error = err.Error()
 		return s.publishResult(ctx, result)
 	}
 
 	if err := s.dispatchToWorker(ctx, worker, invocation); err != nil {
-		result.WorkerName = worker.Name
-		result.WorkerNamespace = worker.Namespace
-		result.StatusCode = http.StatusBadGateway
-		result.Error = err.Error()
-		return s.publishResult(ctx, result)
+		return fmt.Errorf("dispatch invocation %s to worker %s/%s: %w", invocation.InvocationID, worker.Namespace, worker.Name, err)
 	}
 
 	s.logger.Info("serverless invocation dispatched",
@@ -189,7 +203,7 @@ func (s *Service) acquireWorker(ctx context.Context, requestID, invocationID str
 		return worker, nil
 	}
 	if len(units) == 0 {
-		return Worker{}, fmt.Errorf("no registered GPUUnit template for serverlessRequestID %q", requestID)
+		return Worker{}, fmt.Errorf("%w %q", errNoServerlessWorkerTemplate, requestID)
 	}
 
 	if candidate, ok := firstPendingWorker(units, requestID); ok {
@@ -205,6 +219,9 @@ func (s *Service) acquireWorker(ctx context.Context, requestID, invocationID str
 	}
 
 	template := templateUnit(units)
+	if pending := pendingManagedWorkers(units, requestID); pending >= s.cfg.MaxPendingWorkersPerRequestID {
+		return Worker{}, &backpressureError{requestID: requestID, pending: pending, limit: s.cfg.MaxPendingWorkersPerRequestID}
+	}
 	created, _, err := s.runtime.CreateGPUUnit(ctx, buildCreateRequest(template, invocationID))
 	if err != nil {
 		return Worker{}, fmt.Errorf("create serverless worker from template %s: %w", template.Name, err)
@@ -278,6 +295,7 @@ func (s *Service) dispatchToWorker(ctx context.Context, worker Worker, invocatio
 		WorkerName:          worker.Name,
 		WorkerNamespace:     worker.Namespace,
 		Mode:                invocation.Mode,
+		State:               serverless.InvocationStateDispatching,
 		ContentType:         invocation.ContentType,
 		Headers:             cloneStringMap(invocation.Headers),
 		Attributes:          cloneStringMap(invocation.Attributes),
@@ -381,6 +399,45 @@ func firstPendingWorker(units []domain.GPUUnitRuntime, requestID string) (domain
 		return unit, true
 	}
 	return domain.GPUUnitRuntime{}, false
+}
+
+func pendingManagedWorkers(units []domain.GPUUnitRuntime, requestID string) int {
+	pending := 0
+	for _, unit := range units {
+		if !unit.Serverless.Enabled || unit.Serverless.RequestID != requestID {
+			continue
+		}
+		if !isActivatorManagedWorker(unit) {
+			continue
+		}
+		if unit.Phase == runtimev1alpha1.PhaseReady {
+			continue
+		}
+		pending++
+	}
+	return pending
+}
+
+func isRetryableInvocationError(err error) bool {
+	var pressure *backpressureError
+	if errors.As(err, &pressure) {
+		return true
+	}
+	return !errors.Is(err, errNoServerlessWorkerTemplate)
+}
+
+func classifyInvocationFailure(err error) serverless.InvocationFailureClass {
+	if errors.Is(err, errNoServerlessWorkerTemplate) {
+		return serverless.InvocationFailureNoWorkerTemplate
+	}
+	var pressure *backpressureError
+	if errors.As(err, &pressure) {
+		return serverless.InvocationFailureBackpressure
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return serverless.InvocationFailureActivationTimeout
+	}
+	return serverless.InvocationFailureDispatchError
 }
 
 func templateUnit(units []domain.GPUUnitRuntime) domain.GPUUnitRuntime {

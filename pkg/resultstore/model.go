@@ -12,21 +12,23 @@ var ErrNotFound = errors.New("invocation result not found")
 
 // InvocationRecord is the storage model used by the ScyllaDB-backed result store.
 type InvocationRecord struct {
-	InvocationID        string                    `db:"invocation_id"`
-	ServerlessRequestID string                    `db:"serverless_request_id"`
-	Mode                serverless.InvocationMode `db:"mode"`
-	WorkerName          string                    `db:"worker_name"`
-	WorkerNamespace     string                    `db:"worker_namespace"`
-	StatusCode          int                       `db:"status_code"`
-	ContentType         string                    `db:"content_type"`
-	Headers             map[string]string         `db:"headers"`
-	BodyInline          []byte                    `db:"body_inline"`
-	BodyBytes           int64                     `db:"body_bytes"`
-	BodyTruncated       bool                      `db:"body_truncated"`
-	Error               string                    `db:"error"`
-	StartedAt           time.Time                 `db:"started_at"`
-	CompletedAt         time.Time                 `db:"completed_at"`
-	StoredAt            time.Time                 `db:"stored_at"`
+	InvocationID        string                            `db:"invocation_id"`
+	ServerlessRequestID string                            `db:"serverless_request_id"`
+	Mode                serverless.InvocationMode         `db:"mode"`
+	State               serverless.InvocationState        `db:"state"`
+	FailureClass        serverless.InvocationFailureClass `db:"failure_class"`
+	WorkerName          string                            `db:"worker_name"`
+	WorkerNamespace     string                            `db:"worker_namespace"`
+	StatusCode          int                               `db:"status_code"`
+	ContentType         string                            `db:"content_type"`
+	Headers             map[string]string                 `db:"headers"`
+	BodyInline          []byte                            `db:"body_inline"`
+	BodyBytes           int64                             `db:"body_bytes"`
+	BodyTruncated       bool                              `db:"body_truncated"`
+	Error               string                            `db:"error"`
+	StartedAt           time.Time                         `db:"started_at"`
+	CompletedAt         time.Time                         `db:"completed_at"`
+	StoredAt            time.Time                         `db:"stored_at"`
 }
 
 // RecordFromResult converts the queue result contract into the ScyllaDB storage model.
@@ -54,6 +56,8 @@ func RecordFromResult(result serverless.InvocationResultMessage, maxInlineBodyBy
 		InvocationID:        result.InvocationID,
 		ServerlessRequestID: result.ServerlessRequestID,
 		Mode:                result.Mode,
+		State:               normalizeResultState(result),
+		FailureClass:        result.FailureClass,
 		WorkerName:          result.WorkerName,
 		WorkerNamespace:     result.WorkerNamespace,
 		StatusCode:          result.StatusCode,
@@ -84,4 +88,17 @@ func cloneStringMap(src map[string]string) map[string]string {
 		out[key] = value
 	}
 	return out
+}
+
+func normalizeResultState(result serverless.InvocationResultMessage) serverless.InvocationState {
+	if result.State != "" {
+		return result.State
+	}
+	if result.FailureClass == serverless.InvocationFailureFrameworkTimeout {
+		return serverless.InvocationStateExpired
+	}
+	if result.Error != "" {
+		return serverless.InvocationStateFailed
+	}
+	return serverless.InvocationStateSucceeded
 }

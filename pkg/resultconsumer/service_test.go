@@ -36,6 +36,9 @@ func TestConfigNormalizedDefaults(t *testing.T) {
 	if normalized.AckWaitDuration() != 30*time.Second {
 		t.Fatalf("expected 30s ack wait, got %s", normalized.AckWaitDuration())
 	}
+	if normalized.Retry.MaxDeliver != serverless.DefaultRetryMaxDeliver {
+		t.Fatalf("expected default retry max deliver, got %+v", normalized.Retry)
+	}
 }
 
 func TestConfigRequiresQueueURL(t *testing.T) {

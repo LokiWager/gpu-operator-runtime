@@ -364,6 +364,8 @@ func desiredUnitServerlessSidecar(
 			{Name: serverless.EnvServerlessRequestID, Value: spec.RequestID},
 			{Name: serverless.EnvWorkerConsumerName, Value: "serverless-sidecar-" + instance.Name},
 			{Name: serverless.EnvHeartbeatInterval, Value: normalizedWorkerConfig.HeartbeatInterval},
+			{Name: serverless.EnvDispatchMaxDeliver, Value: strconv.FormatInt(int64(normalizedWorkerConfig.DispatchRetry.MaxDeliver), 10)},
+			{Name: serverless.EnvDispatchBackoff, Value: strings.Join(normalizedWorkerConfig.DispatchRetry.Backoff, ",")},
 			{Name: serverless.EnvFrameworkSocketPath, Value: spec.Framework.SocketPath},
 			{Name: serverless.EnvFrameworkInvokePath, Value: spec.Framework.InvokePath},
 			{Name: serverless.EnvFrameworkHealthPath, Value: spec.Framework.HealthPath},

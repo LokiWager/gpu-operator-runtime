@@ -200,7 +200,7 @@ func TestServiceProcessInvocationCreatesWorkerWhenNoReadyWorkerExists(t *testing
 	}
 }
 
-func TestServiceProcessInvocationPublishesFailureWhenDispatchFails(t *testing.T) {
+func TestServiceProcessInvocationRetriesWhenDispatchFails(t *testing.T) {
 	runtime := &fakeRuntimeControl{
 		listUnits: []domain.GPUUnitRuntime{{
 			Name:      "unit-sd-webui-a",
@@ -222,14 +222,80 @@ func TestServiceProcessInvocationPublishesFailureWhenDispatchFails(t *testing.T)
 		ServerlessRequestID: "sd-webui",
 		Mode:                serverless.InvocationModeSync,
 	})
+	if err == nil {
+		t.Fatalf("expected dispatch error")
+	}
+	if results.calls != 0 {
+		t.Fatalf("expected dispatch failure to be retried instead of published as a terminal result, got %+v", results.last)
+	}
+}
+
+func TestServiceProcessInvocationPublishesTerminalFailureWhenNoTemplateExists(t *testing.T) {
+	runtime := &fakeRuntimeControl{}
+	dispatches := &fakeDispatchPublisher{}
+	results := &fakeResultPublisher{}
+	svc := New(runtime, dispatches, results, slog.New(slog.NewTextHandler(io.Discard, nil)), mustActivatorConfig(t))
+
+	err := svc.ProcessInvocation(context.Background(), serverless.InvocationMessage{
+		InvocationID:        "inv-no-template",
+		ServerlessRequestID: "sd-webui",
+		Mode:                serverless.InvocationModeAsync,
+	})
 	if err != nil {
 		t.Fatalf("process invocation: %v", err)
 	}
 	if results.calls != 1 {
-		t.Fatalf("expected one failure result publication, got %d", results.calls)
+		t.Fatalf("expected terminal failure result, got %d calls", results.calls)
 	}
-	if results.last.StatusCode != 502 || results.last.Error == "" {
-		t.Fatalf("expected dispatch failure result, got %+v", results.last)
+	if results.last.State != serverless.InvocationStateFailed || results.last.FailureClass != serverless.InvocationFailureNoWorkerTemplate {
+		t.Fatalf("expected no-template failure result, got %+v", results.last)
+	}
+}
+
+func TestServiceProcessInvocationBackpressuresWhenPendingWorkerLimitReached(t *testing.T) {
+	cfg := mustActivatorConfig(t)
+	cfg.MaxPendingWorkersPerRequestID = 1
+	cfg.WorkerReadyWait = "50ms"
+	cfg.WorkerPollInterval = "10ms"
+	cfg = mustNormalizedActivatorConfig(t, cfg)
+	requestID := "sd-webui"
+	template := domain.GPUUnitRuntime{
+		Name:      "unit-sd-webui-template",
+		Namespace: runtimev1alpha1.DefaultInstanceNamespace,
+		Phase:     runtimev1alpha1.PhaseProgressing,
+		Serverless: runtimev1alpha1.GPUUnitServerlessSpec{
+			Enabled:   true,
+			RequestID: requestID,
+		},
+	}
+	pending := domain.GPUUnitRuntime{
+		Name:      generatedWorkerName(requestID, "inv-pending"),
+		Namespace: runtimev1alpha1.DefaultInstanceNamespace,
+		Phase:     runtimev1alpha1.PhaseProgressing,
+		Serverless: runtimev1alpha1.GPUUnitServerlessSpec{
+			Enabled:   true,
+			RequestID: requestID,
+		},
+	}
+	runtime := &fakeRuntimeControl{listUnits: []domain.GPUUnitRuntime{template, pending}}
+	dispatches := &fakeDispatchPublisher{}
+	results := &fakeResultPublisher{}
+	svc := New(runtime, dispatches, results, slog.New(slog.NewTextHandler(io.Discard, nil)), cfg)
+
+	err := svc.ProcessInvocation(context.Background(), serverless.InvocationMessage{
+		InvocationID:        "inv-backpressure",
+		ServerlessRequestID: requestID,
+		Mode:                serverless.InvocationModeAsync,
+	})
+	if err == nil {
+		t.Fatalf("expected backpressure error")
+	}
+	var pressure *backpressureError
+	if !errors.As(err, &pressure) {
+		t.Fatalf("expected backpressure error, got %v", err)
+	}
+	if len(runtime.createCalls) != 0 || results.calls != 0 {
+		t.Fatalf("expected no worker creation or terminal result, creates=%d results=%d", len(runtime.createCalls), results.calls)
 	}
 }
 

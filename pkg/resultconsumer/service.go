@@ -45,7 +45,7 @@ func (s *Service) Run(ctx context.Context, queue Queue) error {
 	if s.store == nil {
 		return fmt.Errorf("result store is required")
 	}
-	return queue.ConsumeInvocationResults(ctx, s.cfg.ConsumerName, s.cfg.AckWaitDuration(), s.HandleResult)
+	return queue.ConsumeInvocationResults(ctx, s.cfg.ConsumerName, s.cfg.ConsumerOptions(), s.HandleResult)
 }
 
 // HandleResult stores one completed invocation result.

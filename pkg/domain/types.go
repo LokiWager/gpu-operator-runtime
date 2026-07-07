@@ -121,6 +121,8 @@ type ServerlessInvocationResult struct {
 	InvocationID        string            `json:"invocationID"`
 	ServerlessRequestID string            `json:"serverlessRequestID"`
 	Mode                string            `json:"mode"`
+	State               string            `json:"state,omitempty"`
+	FailureClass        string            `json:"failureClass,omitempty"`
 	WorkerName          string            `json:"workerName,omitempty"`
 	WorkerNamespace     string            `json:"workerNamespace,omitempty"`
 	StatusCode          int               `json:"statusCode,omitempty"`

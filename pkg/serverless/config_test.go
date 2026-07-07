@@ -18,6 +18,49 @@ func TestNATSConfigNormalizedDefaults(t *testing.T) {
 	}
 }
 
+func TestRetryPolicyNormalizedDefaults(t *testing.T) {
+	policy, err := (RetryPolicy{}).Normalized()
+	if err != nil {
+		t.Fatalf("normalize retry policy: %v", err)
+	}
+	if policy.MaxDeliver != DefaultRetryMaxDeliver {
+		t.Fatalf("expected default max deliver, got %+v", policy)
+	}
+	if len(policy.Backoff) == 0 {
+		t.Fatalf("expected default backoff")
+	}
+	if delay := policy.DelayForDelivery(10); delay <= 0 {
+		t.Fatalf("expected retry delay, got %s", delay)
+	}
+}
+
+func TestRetryPolicyRejectsTooManyBackoffEntries(t *testing.T) {
+	_, err := (RetryPolicy{
+		MaxDeliver: 2,
+		Backoff:    []string{"1s", "2s", "3s"},
+	}).Normalized()
+	if err == nil {
+		t.Fatalf("expected invalid retry policy")
+	}
+}
+
+func TestStreamSubjectsIncludeDeadLetterSubjects(t *testing.T) {
+	subjects := StreamSubjects("runtime.serverless")
+	found := false
+	for _, subject := range subjects {
+		if subject == "runtime.serverless.dlq.*.*" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected dlq wildcard subject, got %+v", subjects)
+	}
+	if got := DeadLetterSubject("runtime.serverless", DeadLetterSourceInvocation, "sd-webui"); got != "runtime.serverless.dlq.invocation.sd-webui" {
+		t.Fatalf("unexpected dead letter subject: %s", got)
+	}
+}
+
 func TestNATSConfigNormalizesNetworkPolicyTarget(t *testing.T) {
 	cfg, err := (NATSConfig{
 		URL: "nats://nats.messaging.svc.cluster.local:4222",
@@ -78,5 +121,8 @@ func TestWorkerSidecarConfigNormalizedDefaults(t *testing.T) {
 	}
 	if cfg.HealthPort != DefaultWorkerSidecarHealthPort {
 		t.Fatalf("expected worker sidecar health port %d, got %d", DefaultWorkerSidecarHealthPort, cfg.HealthPort)
+	}
+	if cfg.DispatchRetry.MaxDeliver != DefaultRetryMaxDeliver {
+		t.Fatalf("expected default dispatch retry, got %+v", cfg.DispatchRetry)
 	}
 }

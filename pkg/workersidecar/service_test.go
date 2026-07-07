@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"net/http"
 	"testing"
-	"time"
 
 	"github.com/loki/gpu-operator-runtime/pkg/serverless"
 )
@@ -70,14 +69,14 @@ func (f *fakeDispatchConsumer) ConsumeWorkerDispatches(
 	durable string,
 	requestID string,
 	workerName string,
-	ackWait time.Duration,
+	opts serverless.ConsumerOptions,
 	handler func(context.Context, serverless.WorkerDispatchMessage) error,
 ) error {
 	f.called = true
 	f.last.durable = durable
 	f.last.requestID = requestID
 	f.last.workerName = workerName
-	if ackWait <= 0 {
+	if opts.AckWait <= 0 {
 		return errors.New("ackWait should be > 0")
 	}
 	return nil
@@ -112,6 +111,9 @@ func TestServiceHandleDispatchPublishesSuccessResult(t *testing.T) {
 	if results.last.StatusCode != http.StatusCreated {
 		t.Fatalf("expected result status 201, got %+v", results.last)
 	}
+	if results.last.State != serverless.InvocationStateSucceeded {
+		t.Fatalf("expected succeeded state, got %+v", results.last)
+	}
 	if metrics.calls == 0 {
 		t.Fatalf("expected worker metrics to be published")
 	}
@@ -135,6 +137,33 @@ func TestServiceHandleDispatchPublishesFailureResult(t *testing.T) {
 	}
 	if results.last.StatusCode != http.StatusBadGateway || results.last.Error == "" {
 		t.Fatalf("expected bad gateway result, got %+v", results.last)
+	}
+	if results.last.State != serverless.InvocationStateFailed || results.last.FailureClass != serverless.InvocationFailureFrameworkError {
+		t.Fatalf("expected framework failure classification, got %+v", results.last)
+	}
+}
+
+func TestServiceHandleDispatchClassifiesFrameworkTimeout(t *testing.T) {
+	cfg := mustSidecarConfig(t)
+	results := &fakeResultPublisher{}
+	metrics := &fakeMetricsPublisher{}
+	svc := New(cfg, &fakeFrameworkClient{err: context.DeadlineExceeded}, results, metrics, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	err := svc.HandleDispatch(context.Background(), serverless.WorkerDispatchMessage{
+		InvocationID:        "inv-timeout",
+		ServerlessRequestID: cfg.ServerlessRequestID,
+		WorkerName:          cfg.WorkerName,
+		WorkerNamespace:     cfg.WorkerNamespace,
+		Mode:                serverless.InvocationModeAsync,
+	})
+	if err != nil {
+		t.Fatalf("handle dispatch: %v", err)
+	}
+	if results.last.StatusCode != http.StatusGatewayTimeout {
+		t.Fatalf("expected gateway timeout result, got %+v", results.last)
+	}
+	if results.last.State != serverless.InvocationStateExpired || results.last.FailureClass != serverless.InvocationFailureFrameworkTimeout {
+		t.Fatalf("expected timeout classification, got %+v", results.last)
 	}
 }
 

@@ -22,28 +22,9 @@
 18. Split runtime control plane with separate controller-manager and runtime-api processes
 19. DRA-backed package allocation with ResourceClaim status as the allocation source of truth
 20. GPU virtualization with HAMi on top of DRA
+21. Reliable serverless execution with retry policy, DLQ, timeout classification, idempotent queue writes, and activator backpressure
 
 ## Planned Chapters
-
-### 21. Reliable Serverless Execution
-
-Goal: make the serverless queue path reliable under retries, failures, duplicate delivery, and worker pressure.
-
-Code scope:
-
-- Add NATS consumer settings for `ackWait`, `maxDeliver`, and retry backoff.
-- Add dead-letter subjects such as `runtime.serverless.dlq.*`.
-- Define serverless invocation states such as `queued`, `dispatching`, `running`, `succeeded`, `failed`, and `expired`.
-- Persist state transitions in the result store or a companion state table.
-- Add timeout classification for activator worker creation, sidecar framework calls, and result-store writes.
-- Add idempotency rules for duplicate invocation messages, duplicate dispatches, and duplicate results.
-- Add basic backpressure so activator does not create unlimited GPU workers when queues grow faster than capacity.
-
-Blog focus:
-
-- Queue-first means at-least-once delivery, not exactly-once execution.
-- Retry, timeout, DLQ, and idempotency are one design, not separate patches.
-- Backpressure protects the GPU cluster from turning queue pressure into uncontrolled Pod creation.
 
 ### 22. Security and Auditability
 

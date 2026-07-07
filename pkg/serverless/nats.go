@@ -220,180 +220,18 @@ func (p *NATSPublisher) PublishInvocationResult(ctx context.Context, result Invo
 }
 
 // ConsumeInvocations drains invocation messages from the durable invocation subject family and acknowledges them on successful handling.
-func (p *NATSPublisher) ConsumeInvocations(ctx context.Context, durable string, ackWait time.Duration, handler func(context.Context, InvocationMessage) error) error {
-	if !p.Enabled() {
-		return fmt.Errorf("serverless queue publisher is not configured")
-	}
-	if durable == "" {
-		return fmt.Errorf("consumer durable name is required")
-	}
-	if handler == nil {
-		return fmt.Errorf("invocation handler is required")
-	}
-
-	consumer, err := p.js.CreateOrUpdateConsumer(ctx, p.cfg.StreamName, jetstream.ConsumerConfig{
-		Durable:       durable,
-		AckPolicy:     jetstream.AckExplicitPolicy,
-		FilterSubject: fmt.Sprintf("%s.invoke.*", p.cfg.SubjectPrefix),
-		AckWait:       ackWait,
-	})
-	if err != nil {
-		return fmt.Errorf("create or update invocation consumer %s: %w", durable, err)
-	}
-
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		default:
-		}
-
-		batch, err := consumer.Fetch(1, jetstream.FetchMaxWait(2*time.Second))
-		if err != nil {
-			if ctx.Err() != nil {
-				return nil
-			}
-			return fmt.Errorf("fetch invocation batch: %w", err)
-		}
-
-		for jsMsg := range batch.Messages() {
-			var msg InvocationMessage
-			if err := json.Unmarshal(jsMsg.Data(), &msg); err != nil {
-				p.logger.Error("discarding invalid invocation payload", "subject", jsMsg.Subject(), "error", err)
-				_ = jsMsg.Term()
-				continue
-			}
-			if err := handler(ctx, msg); err != nil {
-				p.logger.Error("invocation handling failed", "invocationID", msg.InvocationID, "serverlessRequestID", msg.ServerlessRequestID, "error", err)
-				_ = jsMsg.NakWithDelay(2 * time.Second)
-				continue
-			}
-			if err := jsMsg.Ack(); err != nil {
-				return fmt.Errorf("ack invocation %s: %w", msg.InvocationID, err)
-			}
-		}
-		if err := batch.Error(); err != nil && ctx.Err() == nil {
-			return fmt.Errorf("consume invocation batch: %w", err)
-		}
-	}
+func (p *NATSPublisher) ConsumeInvocations(ctx context.Context, durable string, opts ConsumerOptions, handler func(context.Context, InvocationMessage) error) error {
+	return consumeJSONMessages(p, ctx, durable, fmt.Sprintf("%s.invoke.*", p.cfg.SubjectPrefix), opts, DeadLetterSourceInvocation, invocationDeadLetterInfo, handler)
 }
 
 // ConsumeWorkerMetrics drains durable worker lifecycle events for the activator lifecycle manager.
-func (p *NATSPublisher) ConsumeWorkerMetrics(ctx context.Context, durable string, ackWait time.Duration, handler func(context.Context, WorkerMetricMessage) error) error {
-	if !p.Enabled() {
-		return fmt.Errorf("serverless queue publisher is not configured")
-	}
-	if durable == "" {
-		return fmt.Errorf("worker metrics durable name is required")
-	}
-	if handler == nil {
-		return fmt.Errorf("worker metrics handler is required")
-	}
-
-	consumer, err := p.js.CreateOrUpdateConsumer(ctx, p.cfg.StreamName, jetstream.ConsumerConfig{
-		Durable:       durable,
-		AckPolicy:     jetstream.AckExplicitPolicy,
-		FilterSubject: fmt.Sprintf("%s.metrics.*", p.cfg.SubjectPrefix),
-		AckWait:       ackWait,
-	})
-	if err != nil {
-		return fmt.Errorf("create or update worker metrics consumer %s: %w", durable, err)
-	}
-
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		default:
-		}
-
-		batch, err := consumer.Fetch(1, jetstream.FetchMaxWait(2*time.Second))
-		if err != nil {
-			if ctx.Err() != nil {
-				return nil
-			}
-			return fmt.Errorf("fetch worker metrics batch: %w", err)
-		}
-
-		for jsMsg := range batch.Messages() {
-			var msg WorkerMetricMessage
-			if err := json.Unmarshal(jsMsg.Data(), &msg); err != nil {
-				p.logger.Error("discarding invalid worker metric payload", "subject", jsMsg.Subject(), "error", err)
-				_ = jsMsg.Term()
-				continue
-			}
-			if err := handler(ctx, msg); err != nil {
-				p.logger.Error("worker metric handling failed", "workerName", msg.WorkerName, "serverlessRequestID", msg.ServerlessRequestID, "eventType", msg.EventType, "error", err)
-				_ = jsMsg.NakWithDelay(2 * time.Second)
-				continue
-			}
-			if err := jsMsg.Ack(); err != nil {
-				return fmt.Errorf("ack worker metric %s/%s: %w", msg.WorkerName, msg.EventType, err)
-			}
-		}
-		if err := batch.Error(); err != nil && ctx.Err() == nil {
-			return fmt.Errorf("consume worker metrics batch: %w", err)
-		}
-	}
+func (p *NATSPublisher) ConsumeWorkerMetrics(ctx context.Context, durable string, opts ConsumerOptions, handler func(context.Context, WorkerMetricMessage) error) error {
+	return consumeJSONMessages(p, ctx, durable, fmt.Sprintf("%s.metrics.*", p.cfg.SubjectPrefix), opts, DeadLetterSourceMetric, workerMetricDeadLetterInfo, handler)
 }
 
 // ConsumeInvocationResults drains durable invocation completion events for control-plane result storage.
-func (p *NATSPublisher) ConsumeInvocationResults(ctx context.Context, durable string, ackWait time.Duration, handler func(context.Context, InvocationResultMessage) error) error {
-	if !p.Enabled() {
-		return fmt.Errorf("serverless queue publisher is not configured")
-	}
-	if durable == "" {
-		return fmt.Errorf("invocation result durable name is required")
-	}
-	if handler == nil {
-		return fmt.Errorf("invocation result handler is required")
-	}
-
-	consumer, err := p.js.CreateOrUpdateConsumer(ctx, p.cfg.StreamName, jetstream.ConsumerConfig{
-		Durable:       durable,
-		AckPolicy:     jetstream.AckExplicitPolicy,
-		FilterSubject: fmt.Sprintf("%s.result.*", p.cfg.SubjectPrefix),
-		AckWait:       ackWait,
-	})
-	if err != nil {
-		return fmt.Errorf("create or update invocation result consumer %s: %w", durable, err)
-	}
-
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		default:
-		}
-
-		batch, err := consumer.Fetch(1, jetstream.FetchMaxWait(2*time.Second))
-		if err != nil {
-			if ctx.Err() != nil {
-				return nil
-			}
-			return fmt.Errorf("fetch invocation result batch: %w", err)
-		}
-
-		for jsMsg := range batch.Messages() {
-			var msg InvocationResultMessage
-			if err := json.Unmarshal(jsMsg.Data(), &msg); err != nil {
-				p.logger.Error("discarding invalid invocation result payload", "subject", jsMsg.Subject(), "error", err)
-				_ = jsMsg.Term()
-				continue
-			}
-			if err := handler(ctx, msg); err != nil {
-				p.logger.Error("invocation result handling failed", "invocationID", msg.InvocationID, "serverlessRequestID", msg.ServerlessRequestID, "error", err)
-				_ = jsMsg.NakWithDelay(2 * time.Second)
-				continue
-			}
-			if err := jsMsg.Ack(); err != nil {
-				return fmt.Errorf("ack invocation result %s: %w", msg.InvocationID, err)
-			}
-		}
-		if err := batch.Error(); err != nil && ctx.Err() == nil {
-			return fmt.Errorf("consume invocation result batch: %w", err)
-		}
-	}
+func (p *NATSPublisher) ConsumeInvocationResults(ctx context.Context, durable string, opts ConsumerOptions, handler func(context.Context, InvocationResultMessage) error) error {
+	return consumeJSONMessages(p, ctx, durable, fmt.Sprintf("%s.result.*", p.cfg.SubjectPrefix), opts, DeadLetterSourceResult, invocationResultDeadLetterInfo, handler)
 }
 
 // ConsumeWorkerDispatches drains worker-targeted dispatch messages for one concrete worker sidecar and acknowledges them on successful handling.
@@ -402,28 +240,49 @@ func (p *NATSPublisher) ConsumeWorkerDispatches(
 	durable string,
 	requestID string,
 	workerName string,
-	ackWait time.Duration,
+	opts ConsumerOptions,
 	handler func(context.Context, WorkerDispatchMessage) error,
+) error {
+	subject := DispatchSubject(p.cfg.SubjectPrefix, requestID, workerName)
+	return consumeJSONMessages(p, ctx, durable, subject, opts, DeadLetterSourceDispatch, workerDispatchDeadLetterInfo, handler)
+}
+
+type deadLetterInfo struct {
+	InvocationID        string
+	ServerlessRequestID string
+	WorkerName          string
+	WorkerNamespace     string
+}
+
+func consumeJSONMessages[T any](
+	p *NATSPublisher,
+	ctx context.Context,
+	durable string,
+	filterSubject string,
+	opts ConsumerOptions,
+	source DeadLetterSource,
+	infoFn func(T) deadLetterInfo,
+	handler func(context.Context, T) error,
 ) error {
 	if !p.Enabled() {
 		return fmt.Errorf("serverless queue publisher is not configured")
 	}
 	if durable == "" {
-		return fmt.Errorf("worker dispatch durable name is required")
+		return fmt.Errorf("consumer durable name is required")
 	}
 	if handler == nil {
-		return fmt.Errorf("worker dispatch handler is required")
+		return fmt.Errorf("message handler is required")
 	}
 
-	subject := DispatchSubject(p.cfg.SubjectPrefix, requestID, workerName)
-	consumer, err := p.js.CreateOrUpdateConsumer(ctx, p.cfg.StreamName, jetstream.ConsumerConfig{
-		Durable:       durable,
-		AckPolicy:     jetstream.AckExplicitPolicy,
-		FilterSubject: subject,
-		AckWait:       ackWait,
-	})
+	opts.DeadLetterSource = source
+	normalizedOpts, err := opts.Normalized(30 * time.Second)
 	if err != nil {
-		return fmt.Errorf("create or update worker dispatch consumer %s: %w", durable, err)
+		return err
+	}
+
+	consumer, err := p.createConsumer(ctx, durable, filterSubject, normalizedOpts)
+	if err != nil {
+		return err
 	}
 
 	for {
@@ -442,24 +301,176 @@ func (p *NATSPublisher) ConsumeWorkerDispatches(
 		}
 
 		for jsMsg := range batch.Messages() {
-			var msg WorkerDispatchMessage
+			var msg T
 			if err := json.Unmarshal(jsMsg.Data(), &msg); err != nil {
-				p.logger.Error("discarding invalid worker dispatch payload", "subject", jsMsg.Subject(), "error", err)
-				_ = jsMsg.Term()
+				p.logger.Error("discarding malformed serverless queue payload", "subject", jsMsg.Subject(), "source", source, "error", err)
+				if err := p.deadLetterAndTerm(ctx, jsMsg, normalizedOpts, source, deadLetterInfo{}, InvocationFailureMalformedMessage, err); err != nil {
+					return err
+				}
 				continue
 			}
+			info := infoFn(msg)
 			if err := handler(ctx, msg); err != nil {
-				p.logger.Error("worker dispatch handling failed", "invocationID", msg.InvocationID, "workerName", msg.WorkerName, "error", err)
-				_ = jsMsg.NakWithDelay(2 * time.Second)
+				p.logger.Error("serverless queue handling failed",
+					"source", source,
+					"invocationID", info.InvocationID,
+					"serverlessRequestID", info.ServerlessRequestID,
+					"workerName", info.WorkerName,
+					"error", err,
+				)
+				if terminalDelivery(jsMsg, normalizedOpts) {
+					if err := p.deadLetterAndTerm(ctx, jsMsg, normalizedOpts, source, info, InvocationFailureRetryExhausted, err); err != nil {
+						return err
+					}
+					continue
+				}
+				if err := jsMsg.NakWithDelay(normalizedOpts.Retry.DelayForDelivery(deliveryCount(jsMsg))); err != nil {
+					return fmt.Errorf("nak serverless queue message %s: %w", info.InvocationID, err)
+				}
 				continue
 			}
 			if err := jsMsg.Ack(); err != nil {
-				return fmt.Errorf("ack worker dispatch %s: %w", msg.InvocationID, err)
+				return fmt.Errorf("ack serverless queue message: %w", err)
 			}
 		}
 		if err := batch.Error(); err != nil && ctx.Err() == nil {
-			return fmt.Errorf("consume worker dispatch batch: %w", err)
+			return fmt.Errorf("consume serverless queue batch: %w", err)
 		}
+	}
+}
+
+func (p *NATSPublisher) createConsumer(ctx context.Context, durable, filterSubject string, opts ConsumerOptions) (jetstream.Consumer, error) {
+	consumer, err := p.js.CreateOrUpdateConsumer(ctx, p.cfg.StreamName, jetstream.ConsumerConfig{
+		Durable:       durable,
+		AckPolicy:     jetstream.AckExplicitPolicy,
+		FilterSubject: filterSubject,
+		AckWait:       opts.AckWait,
+		MaxDeliver:    opts.Retry.MaxDeliver,
+		BackOff:       opts.Retry.BackoffDurations(),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create or update consumer %s: %w", durable, err)
+	}
+	return consumer, nil
+}
+
+func (p *NATSPublisher) deadLetterAndTerm(ctx context.Context, jsMsg jetstream.Msg, opts ConsumerOptions, source DeadLetterSource, info deadLetterInfo, failureClass InvocationFailureClass, cause error) error {
+	dlq := buildDeadLetterMessage(jsMsg, source, info, failureClass, cause)
+	if err := p.publishDeadLetter(ctx, dlq); err != nil {
+		return err
+	}
+	if err := jsMsg.TermWithReason(string(failureClass)); err != nil {
+		if err := jsMsg.Term(); err != nil {
+			return fmt.Errorf("term dead-lettered message: %w", err)
+		}
+	}
+	p.logger.Error("serverless queue message moved to dead letter",
+		"source", source,
+		"invocationID", info.InvocationID,
+		"serverlessRequestID", info.ServerlessRequestID,
+		"deliveryCount", dlq.DeliveryCount,
+		"maxDeliver", opts.Retry.MaxDeliver,
+		"failureClass", failureClass,
+		"subject", dlq.OriginalSubject,
+	)
+	return nil
+}
+
+func (p *NATSPublisher) publishDeadLetter(ctx context.Context, msg DeadLetterMessage) error {
+	if !p.Enabled() {
+		return fmt.Errorf("serverless queue publisher is not configured")
+	}
+	requestID := msg.ServerlessRequestID
+	if requestID == "" {
+		requestID = "unknown"
+	}
+	subject := DeadLetterSubject(p.cfg.SubjectPrefix, msg.Source, requestID)
+	payload, err := json.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("marshal dead letter message: %w", err)
+	}
+	msgID := fmt.Sprintf("dlq-%s-%s-%d", msg.Source, normalizeDispatchToken(msg.InvocationID), msg.StreamSequence)
+	if msg.InvocationID == "" {
+		msgID = fmt.Sprintf("dlq-%s-%d-%d", msg.Source, msg.StreamSequence, msg.FailedAt.UnixNano())
+	}
+	if _, err := p.js.Publish(ctx, subject, payload, jetstream.WithMsgID(msgID)); err != nil {
+		return fmt.Errorf("publish dead letter to %s: %w", subject, err)
+	}
+	return nil
+}
+
+func buildDeadLetterMessage(jsMsg jetstream.Msg, source DeadLetterSource, info deadLetterInfo, failureClass InvocationFailureClass, cause error) DeadLetterMessage {
+	meta, _ := jsMsg.Metadata()
+	msg := DeadLetterMessage{
+		Version:             InvocationVersion,
+		Source:              source,
+		State:               InvocationStateDeadLettered,
+		FailureClass:        failureClass,
+		InvocationID:        info.InvocationID,
+		ServerlessRequestID: info.ServerlessRequestID,
+		WorkerName:          info.WorkerName,
+		WorkerNamespace:     info.WorkerNamespace,
+		OriginalSubject:     jsMsg.Subject(),
+		Error:               cause.Error(),
+		Payload:             append([]byte(nil), jsMsg.Data()...),
+		FailedAt:            time.Now().UTC(),
+	}
+	if meta != nil {
+		msg.Stream = meta.Stream
+		msg.Consumer = meta.Consumer
+		msg.StreamSequence = meta.Sequence.Stream
+		msg.ConsumerSequence = meta.Sequence.Consumer
+		msg.DeliveryCount = meta.NumDelivered
+	}
+	return msg
+}
+
+func terminalDelivery(jsMsg jetstream.Msg, opts ConsumerOptions) bool {
+	if opts.Retry.MaxDeliver <= 0 {
+		return false
+	}
+	return deliveryCount(jsMsg) >= uint64(opts.Retry.MaxDeliver)
+}
+
+func deliveryCount(jsMsg jetstream.Msg) uint64 {
+	meta, err := jsMsg.Metadata()
+	if err != nil || meta == nil || meta.NumDelivered == 0 {
+		return 1
+	}
+	return meta.NumDelivered
+}
+
+func invocationDeadLetterInfo(msg InvocationMessage) deadLetterInfo {
+	return deadLetterInfo{
+		InvocationID:        msg.InvocationID,
+		ServerlessRequestID: msg.ServerlessRequestID,
+	}
+}
+
+func workerDispatchDeadLetterInfo(msg WorkerDispatchMessage) deadLetterInfo {
+	return deadLetterInfo{
+		InvocationID:        msg.InvocationID,
+		ServerlessRequestID: msg.ServerlessRequestID,
+		WorkerName:          msg.WorkerName,
+		WorkerNamespace:     msg.WorkerNamespace,
+	}
+}
+
+func workerMetricDeadLetterInfo(msg WorkerMetricMessage) deadLetterInfo {
+	return deadLetterInfo{
+		InvocationID:        msg.InvocationID,
+		ServerlessRequestID: msg.ServerlessRequestID,
+		WorkerName:          msg.WorkerName,
+		WorkerNamespace:     msg.WorkerNamespace,
+	}
+}
+
+func invocationResultDeadLetterInfo(msg InvocationResultMessage) deadLetterInfo {
+	return deadLetterInfo{
+		InvocationID:        msg.InvocationID,
+		ServerlessRequestID: msg.ServerlessRequestID,
+		WorkerName:          msg.WorkerName,
+		WorkerNamespace:     msg.WorkerNamespace,
 	}
 }
 

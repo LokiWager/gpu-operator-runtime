@@ -21,6 +21,7 @@ type Config struct {
 	Serverless   serverless.NATSConfig    `yaml:"serverless"`
 	ConsumerName string                   `yaml:"consumerName"`
 	AckWait      string                   `yaml:"ackWait"`
+	Retry        serverless.RetryPolicy   `yaml:"retry"`
 	Scylla       resultstore.ScyllaConfig `yaml:"scylla"`
 }
 
@@ -30,6 +31,7 @@ func DefaultConfig() Config {
 		Serverless:   serverless.DefaultNATSConfig(),
 		ConsumerName: defaultConsumerName,
 		AckWait:      defaultAckWait,
+		Retry:        serverless.DefaultRetryPolicy(),
 		Scylla:       resultstore.DefaultScyllaConfig(),
 	}
 }
@@ -78,6 +80,11 @@ func (c Config) Normalized() (Config, error) {
 	if _, err := time.ParseDuration(cfg.AckWait); err != nil {
 		return Config{}, fmt.Errorf("parse ackWait %q: %w", cfg.AckWait, err)
 	}
+	retry, err := cfg.Retry.Normalized()
+	if err != nil {
+		return Config{}, fmt.Errorf("normalize retry: %w", err)
+	}
+	cfg.Retry = retry
 
 	normalizedScylla, err := cfg.Scylla.Normalized()
 	if err != nil {
@@ -91,4 +98,13 @@ func (c Config) Normalized() (Config, error) {
 func (c Config) AckWaitDuration() time.Duration {
 	d, _ := time.ParseDuration(c.AckWait)
 	return d
+}
+
+// ConsumerOptions returns the durable consumer policy for completed invocation results.
+func (c Config) ConsumerOptions() serverless.ConsumerOptions {
+	return serverless.ConsumerOptions{
+		AckWait:          c.AckWaitDuration(),
+		Retry:            c.Retry,
+		DeadLetterSource: serverless.DeadLetterSourceResult,
+	}
 }
