@@ -89,6 +89,21 @@ func newServerlessHandler(t *testing.T, publisher serverless.InvocationPublisher
 	return NewServer(svc, logger)
 }
 
+func TestServer_MetricsEndpoint(t *testing.T) {
+	handler := newTestHandler(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "runtime_metrics_scrape_success") {
+		t.Fatalf("expected runtime metrics in response, got %s", rec.Body.String())
+	}
+}
+
 func TestServer_RuntimeInventory(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := runtimev1alpha1.AddToScheme(scheme); err != nil {

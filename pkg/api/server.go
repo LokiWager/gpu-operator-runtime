@@ -8,19 +8,23 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	echoSwagger "github.com/swaggo/echo-swagger"
 
 	_ "github.com/loki/gpu-operator-runtime/docs/swagger"
 	"github.com/loki/gpu-operator-runtime/pkg/contract"
+	runtimemetrics "github.com/loki/gpu-operator-runtime/pkg/metrics"
 	"github.com/loki/gpu-operator-runtime/pkg/serverless"
 	"github.com/loki/gpu-operator-runtime/pkg/service"
 )
 
 // Server owns the Echo HTTP surface for the runtime control plane.
 type Server struct {
-	service *service.Service
-	logger  *slog.Logger
-	echo    *echo.Echo
+	service        *service.Service
+	logger         *slog.Logger
+	echo           *echo.Echo
+	metricsHandler http.Handler
 }
 
 // APIError is the stable error payload returned by the HTTP API.
@@ -42,12 +46,23 @@ func NewServer(svc *service.Service, logger *slog.Logger) *echo.Echo {
 	e.HidePort = true
 
 	s := &Server{
-		service: svc,
-		logger:  logger,
-		echo:    e,
+		service:        svc,
+		logger:         logger,
+		echo:           e,
+		metricsHandler: newMetricsHandler(svc, logger),
 	}
 	s.routes()
 	return e
+}
+
+func newMetricsHandler(svc *service.Service, logger *slog.Logger) http.Handler {
+	registry := prometheus.NewRegistry()
+	if svc != nil {
+		if err := registry.Register(runtimemetrics.NewRuntimeCollector(svc, 5*time.Second)); err != nil && logger != nil {
+			logger.Warn("failed to register runtime metrics collector", "error", err)
+		}
+	}
+	return promhttp.HandlerFor(registry, promhttp.HandlerOpts{})
 }
 
 // routes registers middleware and all HTTP endpoints.
@@ -55,6 +70,7 @@ func (s *Server) routes() {
 	s.echo.Use(middleware.Recover())
 	s.echo.Use(s.loggingMiddleware)
 
+	s.echo.GET("/metrics", echo.WrapHandler(s.metricsHandler))
 	s.echo.GET("/swagger/*", echoSwagger.WrapHandler)
 	s.echo.GET("/api/v1/health", s.handleHealth)
 	s.echo.GET("/api/v1/gpu-storages", s.handleListGPUStorages)

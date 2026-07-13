@@ -9,6 +9,8 @@ import (
 	"time"
 
 	k8svalidation "k8s.io/apimachinery/pkg/util/validation"
+
+	"github.com/loki/gpu-operator-runtime/pkg/secureconfig"
 )
 
 const (
@@ -28,7 +30,20 @@ type NATSConfig struct {
 	StreamMaxAge        string                  `yaml:"streamMaxAge"`
 	ConnectTimeout      string                  `yaml:"connectTimeout"`
 	DuplicatesWindow    string                  `yaml:"duplicatesWindow"`
+	Auth                NATSAuthConfig          `yaml:"auth"`
+	TLS                 secureconfig.TLSConfig  `yaml:"tls"`
 	NetworkPolicyTarget NATSNetworkPolicyTarget `yaml:"networkPolicyTarget"`
+}
+
+// NATSAuthConfig captures NATS credentials supplied directly or through mounted Secret files.
+type NATSAuthConfig struct {
+	Token           string `yaml:"token"`
+	TokenFile       string `yaml:"tokenFile"`
+	Username        string `yaml:"username"`
+	UsernameFile    string `yaml:"usernameFile"`
+	Password        string `yaml:"password"`
+	PasswordFile    string `yaml:"passwordFile"`
+	CredentialsFile string `yaml:"credentialsFile"`
 }
 
 // NATSNetworkPolicyTarget identifies the in-cluster NATS Pods that serverless workers may reach.
@@ -87,12 +102,80 @@ func (c NATSConfig) Normalized() (NATSConfig, error) {
 	if _, err := time.ParseDuration(cfg.DuplicatesWindow); err != nil {
 		return NATSConfig{}, fmt.Errorf("parse duplicatesWindow %q: %w", cfg.DuplicatesWindow, err)
 	}
+	normalizedAuth, err := cfg.Auth.Normalized()
+	if err != nil {
+		return NATSConfig{}, fmt.Errorf("normalize auth: %w", err)
+	}
+	cfg.Auth = normalizedAuth
+	cfg.TLS = cfg.TLS.Normalized()
 	normalizedTarget, err := cfg.NetworkPolicyTarget.Normalized()
 	if err != nil {
 		return NATSConfig{}, fmt.Errorf("normalize networkPolicyTarget: %w", err)
 	}
 	cfg.NetworkPolicyTarget = normalizedTarget
 	return cfg, nil
+}
+
+// Normalized trims NATS credential sources and rejects ambiguous auth modes.
+func (a NATSAuthConfig) Normalized() (NATSAuthConfig, error) {
+	auth := a
+	auth.Token = strings.TrimSpace(auth.Token)
+	auth.TokenFile = strings.TrimSpace(auth.TokenFile)
+	auth.Username = strings.TrimSpace(auth.Username)
+	auth.UsernameFile = strings.TrimSpace(auth.UsernameFile)
+	auth.Password = strings.TrimSpace(auth.Password)
+	auth.PasswordFile = strings.TrimSpace(auth.PasswordFile)
+	auth.CredentialsFile = strings.TrimSpace(auth.CredentialsFile)
+	if auth.CredentialsFile != "" {
+		if auth.Token != "" || auth.TokenFile != "" || auth.Username != "" || auth.UsernameFile != "" || auth.Password != "" || auth.PasswordFile != "" {
+			return NATSAuthConfig{}, fmt.Errorf("credentialsFile cannot be combined with token or username/password auth")
+		}
+	}
+	if auth.Token != "" && auth.TokenFile != "" {
+		return NATSAuthConfig{}, fmt.Errorf("token and tokenFile are mutually exclusive")
+	}
+	if auth.Username != "" && auth.UsernameFile != "" {
+		return NATSAuthConfig{}, fmt.Errorf("username and usernameFile are mutually exclusive")
+	}
+	if auth.Password != "" && auth.PasswordFile != "" {
+		return NATSAuthConfig{}, fmt.Errorf("password and passwordFile are mutually exclusive")
+	}
+	if (auth.Username != "" || auth.UsernameFile != "") != (auth.Password != "" || auth.PasswordFile != "") {
+		return NATSAuthConfig{}, fmt.Errorf("username and password must be configured together")
+	}
+	if (auth.Token != "" || auth.TokenFile != "") && (auth.Username != "" || auth.UsernameFile != "" || auth.Password != "" || auth.PasswordFile != "") {
+		return NATSAuthConfig{}, fmt.Errorf("token auth cannot be combined with username/password auth")
+	}
+	return auth, nil
+}
+
+// ResolvedToken returns a token from either inline config or a mounted Secret file.
+func (a NATSAuthConfig) ResolvedToken() (string, error) {
+	if a.Token != "" {
+		return a.Token, nil
+	}
+	return secureconfig.ReadSecretFile(a.TokenFile)
+}
+
+// ResolvedUserInfo returns username and password from inline config or mounted Secret files.
+func (a NATSAuthConfig) ResolvedUserInfo() (string, string, error) {
+	username := a.Username
+	if username == "" {
+		var err error
+		username, err = secureconfig.ReadSecretFile(a.UsernameFile)
+		if err != nil {
+			return "", "", err
+		}
+	}
+	password := a.Password
+	if password == "" {
+		var err error
+		password, err = secureconfig.ReadSecretFile(a.PasswordFile)
+		if err != nil {
+			return "", "", err
+		}
+	}
+	return username, password, nil
 }
 
 // Normalized trims and validates the configured network policy target.

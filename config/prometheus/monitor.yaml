@@ -25,3 +25,22 @@ spec:
     matchLabels:
       control-plane: controller-manager
       app.kubernetes.io/name: gpu-operator-runtime
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  labels:
+    control-plane: runtime-api
+    app.kubernetes.io/name: gpu-operator-runtime
+    app.kubernetes.io/managed-by: kustomize
+  name: runtime-api-metrics-monitor
+  namespace: system
+spec:
+  endpoints:
+    - path: /metrics
+      port: http
+      scheme: http
+  selector:
+    matchLabels:
+      control-plane: runtime-api
+      app.kubernetes.io/name: gpu-operator-runtime

@@ -218,6 +218,27 @@ Start the result-store consumer where it can reach both NATS and ScyllaDB servic
 GOTOOLCHAIN=go1.26.0 go run ./cmd/result-store --config config/local/result-store.yaml
 ```
 
+The production manifest under `config/manager` now deploys the split runtime as four processes:
+
+- `controller-manager`: reconciles `GPUUnit` and `GPUStorage`; leader election is enabled in the cluster manifest.
+- `runtime-api`: stateless HTTP API; the cluster manifest runs two replicas behind `runtime-api-service`.
+- `activator`: consumes ingress and worker metric subjects and owns worker lifecycle decisions; this chapter keeps it at one replica until lifecycle sharding or leader election is added.
+- `result-store`: consumes durable result subjects and writes ScyllaDB records idempotently; the cluster manifest runs two replicas because duplicate delivery is safe.
+
+The distroless image contains all four binaries, and each process gets its own config file, ServiceAccount, and security context. `controller-manager` and `runtime-api` keep their HTTP health/metrics endpoints because they are HTTP-facing processes.
+
+`activator` and `result-store` are background queue consumers, so this chapter does not add probe-only HTTP servers for them. They fail fast during startup when required dependencies are unavailable, and the process exits if the durable consumer loop returns an unrecoverable error. Kubernetes restarts the container through the Deployment, while JetStream durable consumers preserve queued work.
+
+For these background consumers, operational visibility should come from process logs, container restart count, JetStream consumer lag, DLQ metrics, and ScyllaDB metrics instead of an extra HTTP server that only reports the sidecar process is alive.
+
+Optional Prometheus examples live in `config/prometheus`:
+
+```bash
+kubectl apply -k config/prometheus
+```
+
+Those examples include ServiceMonitors for controller-manager and runtime-api plus basic runtime operational alert rules. They assume the Prometheus Operator CRDs and kube-state-metrics are already installed.
+
 For out-of-cluster debugging, use `kubectl port-forward` and override the YAML hosts to `127.0.0.1`. Do not point production traffic at Pod IPs or public endpoints.
 
 Start a minimal example framework in another terminal:
@@ -262,6 +283,16 @@ serverless:
   streamMaxAge: "72h"
   connectTimeout: "5s"
   duplicatesWindow: "24h"
+  auth:
+    tokenFile: "/var/run/secrets/runtime-nats/token"
+    credentialsFile: ""
+  tls:
+    enabled: true
+    caFile: "/var/run/secrets/runtime-nats/ca.crt"
+    certFile: ""
+    keyFile: ""
+    serverName: "nats.messaging.svc.cluster.local"
+    insecureSkipVerify: false
   networkPolicyTarget:
     namespace: "messaging"
     podLabels:
@@ -323,6 +354,16 @@ retry:
     - "2s"
     - "10s"
     - "30s"
+scylla:
+  hosts:
+    - "scylla-client.runtime-data.svc.cluster.local:9042"
+  usernameFile: "/var/run/secrets/runtime-scylla/username"
+  passwordFile: "/var/run/secrets/runtime-scylla/password"
+  tls:
+    enabled: true
+    caFile: "/var/run/secrets/runtime-scylla/ca.crt"
+    serverName: "scylla-client.runtime-data.svc.cluster.local"
+    insecureSkipVerify: false
 ```
 
 All queue publishes use stable message IDs by invocation, dispatch, result, or DLQ identity. That makes JetStream duplicate detection part of the idempotency story, while ScyllaDB result writes remain upsert-friendly for duplicate result deliveries.
@@ -658,10 +699,13 @@ make ci
 
 - `cmd/controller-manager`: reconciler-only controller process for `GPUUnit` and `GPUStorage`
 - `cmd/runtime-api`: HTTP API, status reporter, and serverless ingress publisher
+- `cmd/activator`: queue consumer that dispatches serverless work and manages worker lifecycle state
+- `cmd/result-store`: durable result consumer that persists invocation results into ScyllaDB
 - `api/v1alpha1`: `GPUUnit` and `GPUStorage` API schemas
 - `internal/controller`: runtime and storage reconcilers plus workload helper logic
 - `pkg/api`: Echo HTTP handlers and Swagger annotations
 - `pkg/config`: local process configuration loaded from YAML
+- `pkg/secureconfig`: Secret-file and TLS helpers for runtime dependency clients
 - `pkg/service`: package expansion, DRA-aware inventory, storage CRUD, recovery actions, idempotency, and API orchestration
 - `pkg/jobs`: periodic status logging
 - `config/`: generated CRDs, RBAC, and sample manifests

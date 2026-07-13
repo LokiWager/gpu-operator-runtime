@@ -34,6 +34,7 @@ func main() {
 		logger.Error("failed to configure serverless queue", "error", err)
 		os.Exit(1)
 	}
+	defer queue.Close()
 
 	store, err := resultstore.NewScyllaStore(ctx, cfg.Scylla, logger)
 	if err != nil {

@@ -58,6 +58,12 @@ spec:
             port: 8081
           initialDelaySeconds: 5
           periodSeconds: 10
+        startupProbe:
+          httpGet:
+            path: /healthz
+            port: 8081
+          failureThreshold: 30
+          periodSeconds: 2
         resources:
           limits:
             cpu: 500m
@@ -90,7 +96,7 @@ spec:
     matchLabels:
       control-plane: runtime-api
       app.kubernetes.io/name: gpu-operator-runtime
-  replicas: 1
+  replicas: 2
   template:
     metadata:
       annotations:
@@ -132,6 +138,12 @@ spec:
             port: 8080
           initialDelaySeconds: 5
           periodSeconds: 10
+        startupProbe:
+          httpGet:
+            path: /api/v1/health
+            port: 8080
+          failureThreshold: 30
+          periodSeconds: 2
         resources:
           limits:
             cpu: 500m
@@ -147,5 +159,122 @@ spec:
       - name: runtime-api-config
         configMap:
           name: runtime-api-config
-      serviceAccountName: controller-manager
+      serviceAccountName: runtime-api
       terminationGracePeriodSeconds: 10
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: activator
+  namespace: system
+  labels:
+    control-plane: activator
+    app.kubernetes.io/name: gpu-operator-runtime
+    app.kubernetes.io/managed-by: kustomize
+spec:
+  selector:
+    matchLabels:
+      control-plane: activator
+      app.kubernetes.io/name: gpu-operator-runtime
+  replicas: 1
+  template:
+    metadata:
+      annotations:
+        kubectl.kubernetes.io/default-container: activator
+      labels:
+        control-plane: activator
+        app.kubernetes.io/name: gpu-operator-runtime
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - command:
+        - /activator
+        args:
+        - --config=/etc/gpu-operator-runtime/activator.yaml
+        image: controller:latest
+        name: activator
+        securityContext:
+          readOnlyRootFilesystem: true
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - "ALL"
+        resources:
+          limits:
+            cpu: 500m
+            memory: 256Mi
+          requests:
+            cpu: 50m
+            memory: 128Mi
+        volumeMounts:
+        - name: activator-config
+          mountPath: /etc/gpu-operator-runtime
+          readOnly: true
+      volumes:
+      - name: activator-config
+        configMap:
+          name: activator-config
+      serviceAccountName: activator
+      terminationGracePeriodSeconds: 20
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: result-store
+  namespace: system
+  labels:
+    control-plane: result-store
+    app.kubernetes.io/name: gpu-operator-runtime
+    app.kubernetes.io/managed-by: kustomize
+spec:
+  selector:
+    matchLabels:
+      control-plane: result-store
+      app.kubernetes.io/name: gpu-operator-runtime
+  replicas: 2
+  template:
+    metadata:
+      annotations:
+        kubectl.kubernetes.io/default-container: result-store
+      labels:
+        control-plane: result-store
+        app.kubernetes.io/name: gpu-operator-runtime
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - command:
+        - /result-store
+        args:
+        - --config=/etc/gpu-operator-runtime/result-store.yaml
+        image: controller:latest
+        name: result-store
+        securityContext:
+          readOnlyRootFilesystem: true
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - "ALL"
+        resources:
+          limits:
+            cpu: 500m
+            memory: 256Mi
+          requests:
+            cpu: 50m
+            memory: 128Mi
+        volumeMounts:
+        - name: result-store-config
+          mountPath: /etc/gpu-operator-runtime
+          readOnly: true
+      volumes:
+      - name: result-store-config
+        configMap:
+          name: result-store-config
+      serviceAccountName: result-store
+      terminationGracePeriodSeconds: 20

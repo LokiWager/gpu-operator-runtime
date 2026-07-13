@@ -23,49 +23,11 @@
 19. DRA-backed package allocation with ResourceClaim status as the allocation source of truth
 20. GPU virtualization with HAMi on top of DRA
 21. Reliable serverless execution with retry policy, DLQ, timeout classification, idempotent queue writes, and activator backpressure
+22. Runtime security and operations boundaries with Secret/TLS-backed dependency configuration, process credential isolation, NetworkPolicy/RBAC design notes, background consumer restart semantics, runtime-api metrics, and production deployment shape
 
 ## Planned Chapters
 
-### 22. Security and Auditability
-
-Goal: make runtime actions attributable, least-privileged, and safe for multi-tenant operation.
-
-Code scope:
-
-- Add tenant and actor context to API requests without turning runtime into the full control plane.
-- Add append-only audit records for create, update, delete, storage, proxy, SSH, and serverless operations.
-- Add Secret-backed configuration references for NATS and ScyllaDB credentials instead of plain YAML values.
-- Add TLS/auth settings for NATS and ScyllaDB clients.
-- Tighten RBAC for controller-manager, runtime-api, activator, result-store, and worker sidecar.
-- Refine NetworkPolicy boundaries between API, controller, NATS, ScyllaDB, worker Pods, and user containers.
-
-Blog focus:
-
-- Audit log is not application log.
-- Runtime records who did what to which resource, while the control plane owns user identity, policy, and billing decisions.
-- Credential and network boundaries must match process boundaries.
-
-### 23. High Availability and Operations
-
-Goal: make the runtime deployable and observable as multiple independent production services.
-
-Code scope:
-
-- Enable controller-manager leader election in the split deployment.
-- Run runtime-api as a stateless multi-replica Deployment.
-- Define result-store and activator high-availability behavior around durable NATS consumers.
-- Add readiness, liveness, startup probes, and graceful shutdown to each process.
-- Expand metrics for API latency, reconcile latency, queue lag, consumer errors, worker ready latency, result write latency, and DLQ counts.
-- Add Prometheus `ServiceMonitor` examples and alert rule examples.
-- Document backup and restore expectations for ScyllaDB-backed runtime state.
-
-Blog focus:
-
-- Which components can scale horizontally and which require leader election or durable-consumer coordination.
-- How to debug request path failures from API to queue to worker to result store.
-- Which metrics matter for SLOs and on-call operations.
-
-### 24. Usage Accounting, Not Billing
+### 23. Usage Accounting, Not Billing
 
 Goal: let runtime produce trusted usage facts while keeping pricing and billing in the control plane.
 
@@ -89,7 +51,7 @@ Blog focus:
 - Billing depends on trusted measurement, but business pricing must stay above the runtime layer.
 - Usage records should be append-friendly, auditable, and reconstructable from resource lifecycle facts.
 
-### 25. Multi-Cluster Scheduling and Federation
+### 24. Multi-Cluster Scheduling and Federation
 
 Goal: extend the runtime model beyond one Kubernetes cluster without collapsing cluster-local control into a global scheduler.
 

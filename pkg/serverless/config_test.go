@@ -1,6 +1,9 @@
 package serverless
 
-import "testing"
+import (
+	"os"
+	"testing"
+)
 
 func TestNATSConfigNormalizedDefaults(t *testing.T) {
 	cfg, err := DefaultNATSConfig().Normalized()
@@ -98,6 +101,44 @@ func TestNATSNetworkPolicyTargetRejectsInvalidLabels(t *testing.T) {
 	}).Normalized()
 	if err == nil {
 		t.Fatalf("expected invalid pod label error")
+	}
+}
+
+func TestNATSAuthConfigRejectsAmbiguousModes(t *testing.T) {
+	_, err := (NATSConfig{
+		URL: "nats://nats.messaging.svc.cluster.local:4222",
+		Auth: NATSAuthConfig{
+			Token:    "token",
+			Username: "runtime",
+			Password: "secret",
+		},
+	}).Normalized()
+	if err == nil {
+		t.Fatalf("expected mixed auth mode error")
+	}
+}
+
+func TestNATSAuthConfigReadsTokenFile(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/token"
+	if err := os.WriteFile(path, []byte("secret-token\n"), 0o600); err != nil {
+		t.Fatalf("write token: %v", err)
+	}
+	cfg, err := (NATSConfig{
+		URL: "nats://nats.messaging.svc.cluster.local:4222",
+		Auth: NATSAuthConfig{
+			TokenFile: path,
+		},
+	}).Normalized()
+	if err != nil {
+		t.Fatalf("normalize config: %v", err)
+	}
+	token, err := cfg.Auth.ResolvedToken()
+	if err != nil {
+		t.Fatalf("resolve token: %v", err)
+	}
+	if token != "secret-token" {
+		t.Fatalf("expected secret token, got %q", token)
 	}
 }
 

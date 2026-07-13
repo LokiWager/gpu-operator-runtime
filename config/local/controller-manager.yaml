@@ -17,6 +17,16 @@ serverless:
   streamMaxAge: "72h"
   connectTimeout: "5s"
   duplicatesWindow: "24h"
+  auth:
+    tokenFile: ""
+    credentialsFile: ""
+  tls:
+    enabled: false
+    caFile: ""
+    certFile: ""
+    keyFile: ""
+    serverName: ""
+    insecureSkipVerify: false
   networkPolicyTarget:
     namespace: "messaging"
     podLabels:

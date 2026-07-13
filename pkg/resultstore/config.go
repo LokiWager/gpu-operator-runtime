@@ -5,6 +5,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/loki/gpu-operator-runtime/pkg/secureconfig"
 )
 
 const (
@@ -20,17 +22,20 @@ var cqlIdentifierPattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*$`)
 
 // ScyllaConfig captures the storage settings for invocation result persistence.
 type ScyllaConfig struct {
-	Hosts              []string `yaml:"hosts"`
-	Keyspace           string   `yaml:"keyspace"`
-	ResultsTable       string   `yaml:"resultsTable"`
-	Datacenter         string   `yaml:"datacenter"`
-	Username           string   `yaml:"username"`
-	Password           string   `yaml:"password"`
-	ConnectTimeout     string   `yaml:"connectTimeout"`
-	RequestTimeout     string   `yaml:"requestTimeout"`
-	ReplicationFactor  int      `yaml:"replicationFactor"`
-	AutoMigrate        bool     `yaml:"autoMigrate"`
-	MaxInlineBodyBytes int64    `yaml:"maxInlineBodyBytes"`
+	Hosts              []string               `yaml:"hosts"`
+	Keyspace           string                 `yaml:"keyspace"`
+	ResultsTable       string                 `yaml:"resultsTable"`
+	Datacenter         string                 `yaml:"datacenter"`
+	Username           string                 `yaml:"username"`
+	UsernameFile       string                 `yaml:"usernameFile"`
+	Password           string                 `yaml:"password"`
+	PasswordFile       string                 `yaml:"passwordFile"`
+	TLS                secureconfig.TLSConfig `yaml:"tls"`
+	ConnectTimeout     string                 `yaml:"connectTimeout"`
+	RequestTimeout     string                 `yaml:"requestTimeout"`
+	ReplicationFactor  int                    `yaml:"replicationFactor"`
+	AutoMigrate        bool                   `yaml:"autoMigrate"`
+	MaxInlineBodyBytes int64                  `yaml:"maxInlineBodyBytes"`
 }
 
 // DefaultScyllaConfig returns local-development defaults. Hosts are intentionally empty until configured.
@@ -72,7 +77,19 @@ func (c ScyllaConfig) Normalized() (ScyllaConfig, error) {
 
 	cfg.Datacenter = strings.TrimSpace(cfg.Datacenter)
 	cfg.Username = strings.TrimSpace(cfg.Username)
+	cfg.UsernameFile = strings.TrimSpace(cfg.UsernameFile)
 	cfg.Password = strings.TrimSpace(cfg.Password)
+	cfg.PasswordFile = strings.TrimSpace(cfg.PasswordFile)
+	cfg.TLS = cfg.TLS.Normalized()
+	if cfg.Username != "" && cfg.UsernameFile != "" {
+		return ScyllaConfig{}, fmt.Errorf("scylla.username and scylla.usernameFile are mutually exclusive")
+	}
+	if cfg.Password != "" && cfg.PasswordFile != "" {
+		return ScyllaConfig{}, fmt.Errorf("scylla.password and scylla.passwordFile are mutually exclusive")
+	}
+	if (cfg.Username != "" || cfg.UsernameFile != "") != (cfg.Password != "" || cfg.PasswordFile != "") {
+		return ScyllaConfig{}, fmt.Errorf("scylla username and password must be configured together")
+	}
 
 	if cfg.ConnectTimeout == "" {
 		cfg.ConnectTimeout = DefaultConnectTimeout
@@ -99,6 +116,27 @@ func (c ScyllaConfig) Normalized() (ScyllaConfig, error) {
 	}
 
 	return cfg, nil
+}
+
+// ResolvedCredentials returns ScyllaDB username/password from inline config or mounted Secret files.
+func (c ScyllaConfig) ResolvedCredentials() (string, string, error) {
+	username := c.Username
+	if username == "" {
+		var err error
+		username, err = secureconfig.ReadSecretFile(c.UsernameFile)
+		if err != nil {
+			return "", "", err
+		}
+	}
+	password := c.Password
+	if password == "" {
+		var err error
+		password, err = secureconfig.ReadSecretFile(c.PasswordFile)
+		if err != nil {
+			return "", "", err
+		}
+	}
+	return username, password, nil
 }
 
 // ConnectTimeoutDuration parses the ScyllaDB connection timeout.

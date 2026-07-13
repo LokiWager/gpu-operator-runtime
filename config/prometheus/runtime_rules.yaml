@@ -1,0 +1,36 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  labels:
+    app.kubernetes.io/name: gpu-operator-runtime
+    app.kubernetes.io/managed-by: kustomize
+  name: runtime-operational-alerts
+  namespace: system
+spec:
+  groups:
+    - name: gpu-operator-runtime.rules
+      rules:
+        - alert: RuntimeMetricsScrapeFailing
+          expr: runtime_metrics_scrape_success == 0
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Runtime metrics snapshot is failing"
+            description: "The runtime-api metrics collector cannot build a healthy Kubernetes/runtime snapshot."
+        - alert: RuntimeKubernetesAPIDown
+          expr: runtime_kubernetes_up == 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Runtime cannot reach the Kubernetes API"
+            description: "runtime-api cannot read Kubernetes inventory or runtime custom resources."
+        - alert: RuntimeAPIReplicaUnavailable
+          expr: kube_deployment_status_replicas_unavailable{deployment=~".*runtime-api"} > 0
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "runtime-api has unavailable replicas"
+            description: "At least one runtime-api replica is unavailable for more than 10 minutes."

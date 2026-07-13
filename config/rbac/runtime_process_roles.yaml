@@ -1,0 +1,137 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: runtime-api
+  namespace: system
+  labels:
+    app.kubernetes.io/name: gpu-operator-runtime
+    app.kubernetes.io/managed-by: kustomize
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: activator
+  namespace: system
+  labels:
+    app.kubernetes.io/name: gpu-operator-runtime
+    app.kubernetes.io/managed-by: kustomize
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: result-store
+  namespace: system
+  labels:
+    app.kubernetes.io/name: gpu-operator-runtime
+    app.kubernetes.io/managed-by: kustomize
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: runtime-api-role
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - nodes
+      - resourcequotas
+    verbs:
+      - get
+      - list
+  - apiGroups:
+      - resource.k8s.io
+    resources:
+      - resourceclaims
+      - resourceslices
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - runtime.lokiwager.io
+    resources:
+      - gpustorages
+      - gpuunits
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - runtime.lokiwager.io
+    resources:
+      - gpustorages/status
+      - gpuunits/status
+    verbs:
+      - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: activator-role
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - nodes
+      - resourcequotas
+    verbs:
+      - get
+      - list
+  - apiGroups:
+      - resource.k8s.io
+    resources:
+      - resourceclaims
+      - resourceslices
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - runtime.lokiwager.io
+    resources:
+      - gpustorages
+      - gpuunits
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - runtime.lokiwager.io
+    resources:
+      - gpuunits/status
+    verbs:
+      - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: runtime-api-rolebinding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: runtime-api-role
+subjects:
+  - kind: ServiceAccount
+    name: runtime-api
+    namespace: system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: activator-rolebinding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: activator-role
+subjects:
+  - kind: ServiceAccount
+    name: activator
+    namespace: system

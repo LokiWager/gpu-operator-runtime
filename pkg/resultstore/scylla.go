@@ -37,7 +37,10 @@ func NewScyllaStore(ctx context.Context, cfg ScyllaConfig, logger *slog.Logger) 
 		}
 	}
 
-	cluster := newCluster(normalized, normalized.Keyspace)
+	cluster, err := newCluster(normalized, normalized.Keyspace)
+	if err != nil {
+		return nil, err
+	}
 	session, err := cluster.CreateSession()
 	if err != nil {
 		return nil, fmt.Errorf("connect to scylla keyspace %s: %w", normalized.Keyspace, err)
@@ -110,7 +113,10 @@ func (s *ScyllaStore) Close() {
 }
 
 func ensureKeyspace(ctx context.Context, cfg ScyllaConfig) error {
-	cluster := newCluster(cfg, "system")
+	cluster, err := newCluster(cfg, "system")
+	if err != nil {
+		return err
+	}
 	session, err := cluster.CreateSession()
 	if err != nil {
 		return fmt.Errorf("connect to scylla system keyspace: %w", err)
@@ -128,7 +134,7 @@ func ensureKeyspace(ctx context.Context, cfg ScyllaConfig) error {
 	return nil
 }
 
-func newCluster(cfg ScyllaConfig, keyspace string) *gocql.ClusterConfig {
+func newCluster(cfg ScyllaConfig, keyspace string) (*gocql.ClusterConfig, error) {
 	cluster := gocql.NewCluster(cfg.Hosts...)
 	cluster.Keyspace = keyspace
 	cluster.Consistency = gocql.LocalQuorum
@@ -137,13 +143,27 @@ func newCluster(cfg ScyllaConfig, keyspace string) *gocql.ClusterConfig {
 	if cfg.Datacenter != "" {
 		cluster.PoolConfig.HostSelectionPolicy = gocql.TokenAwareHostPolicy(gocql.DCAwareRoundRobinPolicy(cfg.Datacenter))
 	}
-	if cfg.Username != "" || cfg.Password != "" {
+	username, password, err := cfg.ResolvedCredentials()
+	if err != nil {
+		return nil, err
+	}
+	if username != "" || password != "" {
 		cluster.Authenticator = gocql.PasswordAuthenticator{
-			Username: cfg.Username,
-			Password: cfg.Password,
+			Username: username,
+			Password: password,
 		}
 	}
-	return cluster
+	tlsConfig, err := cfg.TLS.BuildClientTLSConfig()
+	if err != nil {
+		return nil, err
+	}
+	if tlsConfig != nil {
+		cluster.SslOpts = &gocql.SslOptions{
+			Config:                 tlsConfig,
+			EnableHostVerification: !cfg.TLS.InsecureSkipVerify,
+		}
+	}
+	return cluster, nil
 }
 
 var invocationResultColumns = []string{

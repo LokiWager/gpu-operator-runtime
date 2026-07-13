@@ -69,18 +69,19 @@ func main() {
 		os.Exit(1)
 	}
 
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	queue, err := serverless.NewNATSPublisher(context.Background(), cfg.Serverless, logger)
+	queue, err := serverless.NewNATSPublisher(ctx, cfg.Serverless, logger)
 	if err != nil {
 		ctrl.Log.WithName("setup").Error(err, "Failed to configure serverless queue")
 		os.Exit(1)
 	}
+	defer queue.Close()
 
 	runtimeService := service.New(nil, operatorClient, logger)
 	activatorService := activator.New(runtimeService, queue, queue, logger, cfg)
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 
 	logger.Info("starting serverless activator",
 		"consumerName", cfg.ConsumerName,

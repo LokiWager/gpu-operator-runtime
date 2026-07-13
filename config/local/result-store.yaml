@@ -14,6 +14,16 @@ serverless:
   streamMaxAge: "72h"
   connectTimeout: "5s"
   duplicatesWindow: "24h"
+  auth:
+    tokenFile: ""
+    credentialsFile: ""
+  tls:
+    enabled: false
+    caFile: ""
+    certFile: ""
+    keyFile: ""
+    serverName: ""
+    insecureSkipVerify: false
   networkPolicyTarget:
     namespace: "messaging"
     podLabels:
@@ -23,6 +33,15 @@ scylla:
     - "scylla-client.runtime-data.svc.cluster.local:9042"
   keyspace: "runtime_serverless"
   resultsTable: "invocation_results"
+  usernameFile: ""
+  passwordFile: ""
+  tls:
+    enabled: false
+    caFile: ""
+    certFile: ""
+    keyFile: ""
+    serverName: ""
+    insecureSkipVerify: false
   connectTimeout: "5s"
   requestTimeout: "5s"
   replicationFactor: 1

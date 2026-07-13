@@ -28,10 +28,16 @@ data:
       streamMaxAge: "72h"
       connectTimeout: "5s"
       duplicatesWindow: "24h"
-      networkPolicyTarget:
-        namespace: "messaging"
-        podLabels:
-          app.kubernetes.io/name: "nats"
+      auth:
+        tokenFile: ""
+        credentialsFile: ""
+      tls:
+        enabled: false
+        caFile: ""
+        certFile: ""
+        keyFile: ""
+        serverName: ""
+        insecureSkipVerify: false
     serverlessWorker:
       image: "ghcr.io/lokiwager/gpu-runtime-serverless-sidecar:latest"
       healthPort: 8091
@@ -42,6 +48,119 @@ data:
           - "2s"
           - "10s"
           - "30s"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: activator-config
+  namespace: system
+  labels:
+    control-plane: activator
+    app.kubernetes.io/name: gpu-operator-runtime
+    app.kubernetes.io/managed-by: kustomize
+data:
+  activator.yaml: |
+    consumerName: "runtime-activator"
+    metricsConsumerName: "runtime-activator-metrics"
+    workerReadyWait: "2m"
+    workerPollInterval: "2s"
+    lifecycleInterval: "15s"
+    maxPendingWorkersPerRequestID: 1
+    invocationRetry:
+      maxDeliver: 5
+      backoff:
+        - "2s"
+        - "10s"
+        - "30s"
+    metricsRetry:
+      maxDeliver: 5
+      backoff:
+        - "2s"
+        - "10s"
+        - "30s"
+    serverless:
+      url: "nats://nats.messaging.svc.cluster.local:4222"
+      subjectPrefix: "runtime.serverless"
+      streamName: "RUNTIME_SERVERLESS"
+      streamReplicas: 1
+      streamMaxAge: "72h"
+      connectTimeout: "5s"
+      duplicatesWindow: "24h"
+      auth:
+        tokenFile: ""
+        credentialsFile: ""
+      tls:
+        enabled: false
+        caFile: ""
+        certFile: ""
+        keyFile: ""
+        serverName: ""
+        insecureSkipVerify: false
+      networkPolicyTarget:
+        namespace: "messaging"
+        podLabels:
+          app.kubernetes.io/name: "nats"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: result-store-config
+  namespace: system
+  labels:
+    control-plane: result-store
+    app.kubernetes.io/name: gpu-operator-runtime
+    app.kubernetes.io/managed-by: kustomize
+data:
+  result-store.yaml: |
+    consumerName: "runtime-result-store"
+    ackWait: "30s"
+    retry:
+      maxDeliver: 5
+      backoff:
+        - "2s"
+        - "10s"
+        - "30s"
+    serverless:
+      url: "nats://nats.messaging.svc.cluster.local:4222"
+      subjectPrefix: "runtime.serverless"
+      streamName: "RUNTIME_SERVERLESS"
+      streamReplicas: 1
+      streamMaxAge: "72h"
+      connectTimeout: "5s"
+      duplicatesWindow: "24h"
+      auth:
+        tokenFile: ""
+        credentialsFile: ""
+      tls:
+        enabled: false
+        caFile: ""
+        certFile: ""
+        keyFile: ""
+        serverName: ""
+        insecureSkipVerify: false
+      networkPolicyTarget:
+        namespace: "messaging"
+        podLabels:
+          app.kubernetes.io/name: "nats"
+    scylla:
+      hosts:
+        - "scylla-client.runtime-data.svc.cluster.local:9042"
+      keyspace: "runtime_serverless"
+      resultsTable: "invocation_results"
+      usernameFile: ""
+      passwordFile: ""
+      tls:
+        enabled: false
+        caFile: ""
+        certFile: ""
+        keyFile: ""
+        serverName: ""
+        insecureSkipVerify: false
+      connectTimeout: "5s"
+      requestTimeout: "5s"
+      replicationFactor: 1
+      autoMigrate: true
+      maxInlineBodyBytes: 1048576
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -86,3 +205,13 @@ data:
       streamMaxAge: "72h"
       connectTimeout: "5s"
       duplicatesWindow: "24h"
+      auth:
+        tokenFile: ""
+        credentialsFile: ""
+      tls:
+        enabled: false
+        caFile: ""
+        certFile: ""
+        keyFile: ""
+        serverName: ""
+        insecureSkipVerify: false

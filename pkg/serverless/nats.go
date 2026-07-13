@@ -36,7 +36,11 @@ func NewNATSPublisher(ctx context.Context, cfg NATSConfig, logger *slog.Logger) 
 	streamMaxAge, _ := normalized.StreamMaxAgeDuration()
 	duplicatesWindow, _ := normalized.DuplicatesWindowDuration()
 
-	nc, err := nats.Connect(normalized.URL, nats.Timeout(connectTimeout), nats.Name("gpu-runtime-serverless-ingress"))
+	connectOptions, err := natsConnectOptions(normalized, connectTimeout)
+	if err != nil {
+		return nil, err
+	}
+	nc, err := nats.Connect(normalized.URL, connectOptions...)
 	if err != nil {
 		return nil, fmt.Errorf("connect to nats %s: %w", normalized.URL, err)
 	}
@@ -67,6 +71,34 @@ func NewNATSPublisher(ctx context.Context, cfg NATSConfig, logger *slog.Logger) 
 		cfg:    normalized,
 		logger: logger,
 	}, nil
+}
+
+func natsConnectOptions(cfg NATSConfig, connectTimeout time.Duration) ([]nats.Option, error) {
+	opts := []nats.Option{
+		nats.Timeout(connectTimeout),
+		nats.Name("gpu-runtime-serverless-ingress"),
+	}
+	if cfg.Auth.CredentialsFile != "" {
+		opts = append(opts, nats.UserCredentials(cfg.Auth.CredentialsFile))
+	}
+	if token, err := cfg.Auth.ResolvedToken(); err != nil {
+		return nil, err
+	} else if token != "" {
+		opts = append(opts, nats.Token(token))
+	}
+	if username, password, err := cfg.Auth.ResolvedUserInfo(); err != nil {
+		return nil, err
+	} else if username != "" || password != "" {
+		opts = append(opts, nats.UserInfo(username, password))
+	}
+	tlsConfig, err := cfg.TLS.BuildClientTLSConfig()
+	if err != nil {
+		return nil, err
+	}
+	if tlsConfig != nil {
+		opts = append(opts, nats.Secure(tlsConfig))
+	}
+	return opts, nil
 }
 
 // Enabled reports whether the publisher is ready to publish.
